@@ -3,153 +3,276 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>STT Probe</title>
+  <title>Voice</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       width: 240px;
       height: 282px;
       overflow: hidden;
-      background: #000;
-      color: #0f0;
+      background: #0a0a0a;
+      color: #fff;
       font-family: monospace;
       font-size: 11px;
     }
-    #log {
-      padding: 6px;
-      height: 222px;
-      overflow-y: auto;
-      word-break: break-all;
+    #app {
+      width: 240px;
+      height: 282px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
-    .line { margin-bottom: 3px; }
-    .err  { color: #f44; }
-    .ok   { color: #0f0; }
-    .info { color: #ff0; }
-    button {
-      display: block;
+
+    /* ── Big PTT indicator ── */
+    #ptt-ring {
+      margin-top: 20px;
+      width: 90px;
+      height: 90px;
+      border-radius: 50%;
+      border: 3px solid #333;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: border-color 0.1s, box-shadow 0.1s;
+    }
+    #ptt-ring.listening {
+      border-color: #f44;
+      box-shadow: 0 0 16px #f44a;
+    }
+    #ptt-ring.thinking {
+      border-color: #4af;
+      box-shadow: 0 0 16px #4afa;
+    }
+    #ptt-icon {
+      font-size: 32px;
+    }
+
+    /* ── State label ── */
+    #state-label {
+      margin-top: 8px;
+      font-size: 10px;
+      color: #666;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    /* ── Transcript ── */
+    #transcript {
+      margin-top: 10px;
+      width: 220px;
+      min-height: 28px;
+      padding: 4px 6px;
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 4px;
+      color: #ff0;
+      font-size: 10px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    /* ── Response ── */
+    #response {
+      margin-top: 6px;
+      width: 220px;
+      flex: 1;
+      padding: 5px 6px;
+      overflow-y: auto;
+      background: #000;
+      border: 1px solid #222;
+      border-radius: 4px;
+      color: #ddd;
+      font-size: 11px;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    /* ── Hold button ── */
+    #hold-btn {
       width: 100%;
       height: 30px;
-      background: #111;
-      color: #fff;
+      background: #1a1a1a;
+      color: #888;
       border: none;
-      border-top: 1px solid #444;
+      border-top: 1px solid #333;
       font-family: monospace;
-      font-size: 11px;
+      font-size: 10px;
       cursor: pointer;
+      flex-shrink: 0;
+      margin-top: 6px;
     }
-    button:active { background: #333; }
+    #hold-btn.active {
+      background: #2a0000;
+      color: #f44;
+    }
   </style>
 </head>
 <body>
-  <div id="log"></div>
-  <button id="btn-sr">[ TEST SPEECHRECOGNITION ]</button>
-  <button id="btn-mr">[ TEST MEDIARECORDER ]</button>
+<div id="app">
+  <div id="ptt-ring"><span id="ptt-icon">🎙</span></div>
+  <div id="state-label">hold PTT to speak</div>
+  <div id="transcript">—</div>
+  <div id="response">Waiting for your voice...</div>
+  <button id="hold-btn">[ HOLD TO TALK ]</button>
+</div>
 
-  <script>
-    function log(msg, type) {
-      const d = document.getElementById('log');
-      const line = document.createElement('div');
-      line.className = 'line ' + (type || 'info');
-      line.textContent = msg;
-      d.appendChild(line);
-      d.scrollTop = d.scrollHeight;
+<script>
+  const ring        = document.getElementById('ptt-ring');
+  const stateLabel  = document.getElementById('state-label');
+  const transcript  = document.getElementById('transcript');
+  const response    = document.getElementById('response');
+  const holdBtn     = document.getElementById('hold-btn');
+
+  const SR = window.webkitSpeechRecognition;
+  let recognition   = null;
+  let lastTranscript = '';
+  let state         = 'idle'; // idle | listening | thinking
+
+  // ── Pre-warm mic permission ────────────────────────────────────
+  async function warmMic() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      stream.getTracks().forEach(t => t.stop()); // just needed for permission
+      setState('idle');
+      setLabel('hold PTT to speak');
+    } catch(e) {
+      setLabel('mic error: ' + e.message);
     }
+  }
 
-    log('-- API availability --', 'info');
+  // ── Speech Recognition setup ───────────────────────────────────
+  function buildRecognition() {
+    const r = new SR();
+    r.lang             = 'en-US';
+    r.interimResults   = true;
+    r.continuous       = false;
+    r.maxAlternatives  = 1;
 
-    // SpeechRecognition
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    log('SpeechRecognition: '        + (!!window.SpeechRecognition),        window.SpeechRecognition        ? 'ok' : 'err');
-    log('webkitSpeechRecognition: '  + (!!window.webkitSpeechRecognition),  window.webkitSpeechRecognition  ? 'ok' : 'err');
-    log('SpeechGrammarList: '        + (!!window.SpeechGrammarList),        window.SpeechGrammarList        ? 'ok' : 'err');
+    r.onresult = function(e) {
+      let interim = '';
+      let final   = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t;
+        else interim += t;
+      }
+      transcript.textContent = final || interim || '...';
+      if (final) lastTranscript = final;
+    };
 
-    // MediaRecorder
-    log('MediaRecorder: '            + (!!window.MediaRecorder),            window.MediaRecorder            ? 'ok' : 'err');
-    log('AudioContext: '             + (!!window.AudioContext),              window.AudioContext             ? 'ok' : 'err');
+    r.onerror = function(e) {
+      if (e.error === 'no-speech') {
+        setLabel('no speech detected');
+      } else {
+        setLabel('SR error: ' + e.error);
+      }
+      setState('idle');
+    };
 
-    // Supported MIME types (if MediaRecorder exists)
-    if (window.MediaRecorder) {
-      const types = [
-        'audio/webm',
-        'audio/webm;codecs=opus',
-        'audio/ogg;codecs=opus',
-        'audio/mp4',
-        'audio/wav',
-      ];
-      log('-- supported mimetypes --', 'info');
-      types.forEach(t => {
-        const supported = MediaRecorder.isTypeSupported(t);
-        log(t + ': ' + supported, supported ? 'ok' : 'err');
-      });
+    r.onend = function() {
+      // Only send if we were still in listening state (not already thinking)
+      if (state === 'listening') {
+        const text = lastTranscript || transcript.textContent;
+        if (text && text !== '—' && text !== '...') {
+          sendToLLM(text);
+        } else {
+          setState('idle');
+          setLabel('hold PTT to speak');
+        }
+      }
+    };
+
+    return r;
+  }
+
+  // ── Start listening ────────────────────────────────────────────
+  function startListening() {
+    if (state !== 'idle') return;
+    lastTranscript = '';
+    transcript.textContent = '...';
+    setState('listening');
+    setLabel('listening...');
+    holdBtn.classList.add('active');
+    holdBtn.textContent = '[ RELEASE TO SEND ]';
+
+    recognition = buildRecognition();
+    try {
+      recognition.start();
+    } catch(e) {
+      setLabel('SR start error: ' + e.message);
+      setState('idle');
     }
+  }
 
-    // Test SpeechRecognition live
-    document.getElementById('btn-sr').addEventListener('click', function() {
-      log('-- SR live test --', 'info');
-      if (!SR) { log('SR not available', 'err'); return; }
-      try {
-        const recognition = new SR();
-        recognition.lang = 'en-US';
-        recognition.interimResults = false;
-        recognition.maxAlternatives = 1;
+  // ── Stop listening ─────────────────────────────────────────────
+  function stopListening() {
+    holdBtn.classList.remove('active');
+    holdBtn.textContent = '[ HOLD TO TALK ]';
+    if (recognition && state === 'listening') {
+      try { recognition.stop(); } catch(_) {}
+    }
+  }
 
-        recognition.onstart  = () => log('SR started, speak...', 'ok');
-        recognition.onresult = (e) => {
-          const transcript = e.results[0][0].transcript;
-          log('heard: ' + transcript, 'ok');
-          log('confidence: ' + e.results[0][0].confidence.toFixed(2), 'ok');
-        };
-        recognition.onerror  = (e) => log('SR error: ' + e.error, 'err');
-        recognition.onend    = () => log('SR ended', 'info');
+  // ── Send to LLM ────────────────────────────────────────────────
+  function sendToLLM(text) {
+    setState('thinking');
+    setLabel('thinking...');
+    response.textContent = '';
 
-        recognition.start();
-        log('SR.start() called', 'ok');
-      } catch(e) {
-        log('SR exception: ' + e.message, 'err');
-      }
-    });
+    window.onPluginMessage = function(data) {
+      let reply = '';
+      if (data && data.message)   reply = data.message;
+      else if (data && data.data) reply = data.data;
+      else                        reply = JSON.stringify(data);
 
-    // Test MediaRecorder live — hold to record 3 seconds
-    document.getElementById('btn-mr').addEventListener('click', async function() {
-      log('-- MR live test --', 'info');
-      if (!window.MediaRecorder) { log('MediaRecorder not available', 'err'); return; }
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        log('mic stream OK', 'ok');
+      response.textContent = reply;
+      setState('idle');
+      setLabel('hold PTT to speak');
+    };
 
-        const recorder = new MediaRecorder(stream);
-        const chunks = [];
+    try {
+      PluginMessageHandler.postMessage(JSON.stringify({
+        message: text,
+        useLLM: true,
+        wantsR1Response: false
+      }));
+    } catch(e) {
+      response.textContent = 'SDK error: ' + e.message;
+      setState('idle');
+      setLabel('hold PTT to speak');
+    }
+  }
 
-        recorder.ondataavailable = e => chunks.push(e.data);
-        recorder.onstop = () => {
-          const blob = new Blob(chunks, { type: recorder.mimeType });
-          log('recorded blob OK', 'ok');
-          log('size: ' + blob.size + ' bytes', 'ok');
-          log('type: ' + blob.type, 'ok');
-          stream.getTracks().forEach(t => t.stop());
-        };
-        recorder.onerror = e => log('MR error: ' + e.error, 'err');
+  // ── UI helpers ─────────────────────────────────────────────────
+  function setState(s) {
+    state = s;
+    ring.className = '';
+    if (s === 'listening') { ring.classList.add('listening'); ptt-icon.textContent = '🔴'; }
+    else if (s === 'thinking') { ring.classList.add('thinking'); document.getElementById('ptt-icon').textContent = '💭'; }
+    else { document.getElementById('ptt-icon').textContent = '🎙'; }
+  }
 
-        recorder.start();
-        log('recording 3s...', 'info');
-        setTimeout(() => {
-          recorder.stop();
-          log('stopped', 'info');
-        }, 3000);
-      } catch(e) {
-        log('MR exception: ' + e.message, 'err');
-      }
-    });
+  function setLabel(msg) {
+    stateLabel.textContent = msg;
+  }
 
-    // PTT = trigger SR test
-    window.addEventListener('longPressStart', () => {
-      log('PTT held — triggering SR', 'info');
-      document.getElementById('btn-sr').click();
-    });
-    window.addEventListener('sideClick', () => {
-      log('PTT click — triggering MR', 'info');
-      document.getElementById('btn-mr').click();
-    });
-  </script>
+  // ── Hardware PTT (side button) ─────────────────────────────────
+  window.addEventListener('longPressStart', startListening);
+  window.addEventListener('longPressEnd',   stopListening);
+  window.addEventListener('sideClick',      () => {
+    if (state === 'idle')      startListening();
+    else if (state === 'listening') stopListening();
+  });
+
+  // ── On-screen hold button ──────────────────────────────────────
+  holdBtn.addEventListener('mousedown',  startListening);
+  holdBtn.addEventListener('mouseup',    stopListening);
+  holdBtn.addEventListener('touchstart', function(e) { e.preventDefault(); startListening(); });
+  holdBtn.addEventListener('touchend',   function(e) { e.preventDefault(); stopListening(); });
+
+  // ── Init ───────────────────────────────────────────────────────
+  setLabel('requesting mic...');
+  warmMic();
+</script>
 </body>
 </html>
