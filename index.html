@@ -3,208 +3,251 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Audio Test</title>
+  <title>Voice Assistant</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       width: 240px;
       height: 282px;
       overflow: hidden;
-      background: #000;
-      color: #0f0;
-      font-family: monospace;
-      font-size: 10px;
-    }
-    #log {
-      height: 210px;
-      padding: 5px;
-      overflow-y: auto;
-      word-break: break-all;
-    }
-    .line { margin-bottom: 2px; }
-    .err  { color: #f44; }
-    .ok   { color: #0f0; }
-    .info { color: #ff0; }
-    #status {
-      height: 14px;
-      line-height: 14px;
-      padding: 0 5px;
-      background: #111;
-      color: #0ff;
-      border-top: 1px solid #222;
-      white-space: nowrap;
-      overflow: hidden;
-    }
-    button {
-      display: block;
-      width: 100%;
-      height: 29px;
-      background: #111;
+      background: #0a0a0a;
       color: #fff;
-      border: none;
-      border-top: 1px solid #444;
       font-family: monospace;
       font-size: 11px;
-      cursor: pointer;
     }
-    button.active { background: #2a0000; color: #f44; }
+    #app {
+      width: 240px;
+      height: 282px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ── PTT ring ── */
+    #ptt-wrap {
+      margin-top: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    #ptt-ring {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      border: 3px solid #333;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 30px;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      user-select: none;
+    }
+    #ptt-ring.recording { border-color: #f44; box-shadow: 0 0 18px #f446; }
+    #ptt-ring.thinking  { border-color: #4af; box-shadow: 0 0 18px #4af6; }
+    #ptt-ring.ready     { border-color: #4f4; box-shadow: 0 0 10px #4f42; }
+
+    #state-label {
+      font-size: 9px;
+      color: #666;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    /* ── You said ── */
+    #you-said {
+      margin-top: 8px;
+      width: 220px;
+      padding: 4px 6px;
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 3px;
+      color: #ff0;
+      font-size: 10px;
+      min-height: 22px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    /* ── Response ── */
+    #response {
+      margin-top: 5px;
+      width: 220px;
+      flex: 1;
+      padding: 5px 6px;
+      overflow-y: auto;
+      background: #000;
+      border: 1px solid #222;
+      border-radius: 3px;
+      color: #ddd;
+      font-size: 11px;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    /* ── Hold button ── */
+    #hold-btn {
+      width: 100%;
+      height: 30px;
+      background: #111;
+      color: #666;
+      border: none;
+      border-top: 1px solid #333;
+      font-family: monospace;
+      font-size: 10px;
+      cursor: pointer;
+      flex-shrink: 0;
+      letter-spacing: 1px;
+      margin-top: 5px;
+    }
+    #hold-btn.recording { background: #1a0000; color: #f44; }
+    #hold-btn.thinking  { color: #4af; }
   </style>
 </head>
 <body>
-  <div id="log"></div>
-  <div id="status">starting...</div>
-  <button id="btn">[ HOLD TO RECORD ]</button>
+<div id="app">
+  <div id="ptt-wrap">
+    <div id="ptt-ring">🎙</div>
+    <div id="state-label">initializing...</div>
+  </div>
+  <div id="you-said">—</div>
+  <div id="response">Hold PTT or button to speak.</div>
+  <button id="hold-btn">[ HOLD TO TALK ]</button>
+</div>
 
-  <script>
-    window.onerror = function(msg, src, line) {
-      log('JS ERR: ' + msg + ' L' + line, 'err');
+<script>
+  const ring      = document.getElementById('ptt-ring');
+  const label     = document.getElementById('state-label');
+  const youSaid   = document.getElementById('you-said');
+  const response  = document.getElementById('response');
+  const holdBtn   = document.getElementById('hold-btn');
+
+  const WHISPER_URL = 'https://masatrad-whisper.hf.space/asr?output=txt&language=en&encode=true';
+
+  let micStream  = null;
+  let recorder   = null;
+  let chunks     = [];
+  let recording  = false;
+  let busy       = false;
+
+  // ── State helpers ──────────────────────────────────────────────
+  function setState(s) {
+    ring.className  = s;
+    holdBtn.className = s;
+    const states = {
+      idle:      { icon: '🎙', lbl: 'hold PTT to speak',  btn: '[ HOLD TO TALK ]' },
+      recording: { icon: '🔴', lbl: 'listening...',        btn: '[ RELEASE TO SEND ]' },
+      thinking:  { icon: '💭', lbl: 'thinking...',         btn: '[ ... ]' },
+      ready:     { icon: '🎙', lbl: 'hold PTT to speak',   btn: '[ HOLD TO TALK ]' },
+    };
+    const s2 = states[s] || states.idle;
+    ring.textContent  = s2.icon;
+    label.textContent = s2.lbl;
+    holdBtn.textContent = s2.btn;
+  }
+
+  // ── Init mic ───────────────────────────────────────────────────
+  async function initMic() {
+    setState('idle');
+    label.textContent = 'requesting mic...';
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      setState('ready');
+    } catch(e) {
+      label.textContent = 'mic error: ' + e.message;
+    }
+  }
+
+  // ── Start recording ────────────────────────────────────────────
+  function startRecording() {
+    if (recording || busy || !micStream) return;
+    recording = true;
+    chunks    = [];
+    setState('recording');
+
+    recorder = new MediaRecorder(micStream, { mimeType: 'audio/webm;codecs=opus' });
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = onStop;
+    recorder.start(100);
+  }
+
+  // ── Stop recording ─────────────────────────────────────────────
+  function stopRecording() {
+    if (!recording || !recorder) return;
+    recording = false;
+    recorder.stop();
+    setState('thinking');
+    busy = true;
+  }
+
+  // ── On stop: send to Whisper ───────────────────────────────────
+  async function onStop() {
+    const blob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
+
+    try {
+      label.textContent = 'transcribing...';
+      const formData = new FormData();
+      formData.append('audio_file', blob, 'audio.webm');
+
+      const res = await fetch(WHISPER_URL, { method: 'POST', body: formData });
+      if (!res.ok) throw new Error('Whisper HTTP ' + res.status);
+
+      const transcript = (await res.text()).trim();
+      if (!transcript) throw new Error('empty transcript');
+
+      youSaid.textContent = transcript;
+      sendToLLM(transcript);
+
+    } catch(e) {
+      label.textContent  = 'whisper error: ' + e.message;
+      response.textContent = 'Transcription failed: ' + e.message;
+      busy = false;
+      setState('ready');
+    }
+  }
+
+  // ── Send transcript to r1 LLM ──────────────────────────────────
+  function sendToLLM(text) {
+    label.textContent = 'sending to LLM...';
+
+    window.onPluginMessage = function(data) {
+      const reply = (data && data.message) ? data.message
+                  : (data && data.data)    ? data.data
+                  : JSON.stringify(data);
+      response.textContent = reply;
+      busy = false;
+      setState('ready');
     };
 
-    const btn    = document.getElementById('btn');
-    const status = document.getElementById('status');
-
-    function log(msg, type) {
-      const d = document.getElementById('log');
-      const el = document.createElement('div');
-      el.className = 'line ' + (type || 'info');
-      el.textContent = msg;
-      d.appendChild(el);
-      d.scrollTop = d.scrollHeight;
-    }
-    function setStatus(s) { status.textContent = s; }
-
-    log('page OK', 'ok');
-
-    let micStream   = null;
-    let recorder    = null;
-    let chunks      = [];
-    let recording   = false;
-
-    // ── Pre-warm mic ───────────────────────────────────────────
-    async function warmMic() {
-      log('requesting mic...', 'info');
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        log('mic OK', 'ok');
-        setStatus('ready — hold PTT or button to record');
-      } catch(e) {
-        log('mic error: ' + e.name, 'err');
-        setStatus('mic failed');
-      }
-    }
-
-    // ── Start recording ────────────────────────────────────────
-    function startRecording() {
-      if (recording || !micStream) return;
-      recording = true;
-      chunks = [];
-      btn.classList.add('active');
-      btn.textContent = '[ RELEASE TO SEND ]';
-      setStatus('recording...');
-      log('recording started', 'info');
-
-      try {
-        recorder = new MediaRecorder(micStream, { mimeType: 'audio/webm;codecs=opus' });
-        recorder.ondataavailable = function(e) {
-          if (e.data.size > 0) chunks.push(e.data);
-        };
-        recorder.onstop = onRecordingStop;
-        recorder.start(100); // collect chunks every 100ms
-        log('MediaRecorder started', 'ok');
-        // Auto-stop after 2s to keep payload small
-        setTimeout(function() { if (recording) stopRecording(); }, 2000);
-      } catch(e) {
-        log('recorder error: ' + e.message, 'err');
-        recording = false;
-        btn.classList.remove('active');
-        btn.textContent = '[ HOLD TO RECORD ]';
-      }
-    }
-
-    // ── Stop recording ─────────────────────────────────────────
-    function stopRecording() {
-      if (!recording || !recorder) return;
-      log('stopping...', 'info');
-      recorder.stop();
-      recording = false;
-      btn.classList.remove('active');
-      btn.textContent = '[ HOLD TO RECORD ]';
-      setStatus('processing...');
-    }
-
-    // ── On recording complete → convert → send ─────────────────
-    function onRecordingStop() {
-      const blob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
-      const kb   = Math.round(blob.size / 1024);
-      log('blob: ' + kb + 'KB', 'ok');
-
-      // Convert blob to base64
-      const reader = new FileReader();
-      reader.onloadend = function() {
-        const base64 = reader.result; // data:audio/webm;codecs=opus;base64,...
-        log('base64 ready: ' + Math.round(base64.length / 1024) + 'KB', 'ok');
-        sendToLLM(base64);
-      };
-      reader.onerror = function() {
-        log('FileReader error', 'err');
-      };
-      reader.readAsDataURL(blob);
-    }
-
-    // ── Send to LLM ────────────────────────────────────────────
-    function sendToLLM(base64Audio) {
-      setStatus('sending to LLM...');
-      log('sending audio to LLM...', 'info');
-
-      const message =
-        'I am sending you an audio recording. ' +
-        'Please transcribe exactly what is spoken in this audio. ' +
-        'If you cannot process audio, respond with CANNOT_PROCESS_AUDIO. ' +
-        'AUDIO_DATA_URI: ' + base64Audio;
-
-      window.onPluginMessage = function(data) {
-        const reply = (data && data.message) ? data.message
-                    : (data && data.data)    ? data.data
-                    : JSON.stringify(data);
-
-        log('response: ' + reply.slice(0, 120), 'ok');
-
-        if (reply.includes('CANNOT_PROCESS_AUDIO')) {
-          setStatus('audio not supported by LLM');
-        } else {
-          setStatus('transcription: ' + reply.slice(0, 30));
-        }
-      };
-
-      const payload = JSON.stringify({
-        message: message,
+    try {
+      PluginMessageHandler.postMessage(JSON.stringify({
+        message: text,
         useLLM: true,
         wantsR1Response: false
-      });
-      log('payload size: ' + Math.round(payload.length / 1024) + 'KB', payload.length < 15000 ? 'ok' : 'err');
-      try {
-        PluginMessageHandler.postMessage(payload);
-        log('sent', 'ok');
-      } catch(e) {
-        log('LLM err: ' + e.message, 'err');
-        setStatus('LLM error');
-      }
+      }));
+    } catch(e) {
+      response.textContent = 'LLM error: ' + e.message;
+      busy = false;
+      setState('ready');
     }
+  }
 
-    // ── Button events ──────────────────────────────────────────
-    btn.addEventListener('mousedown',  startRecording);
-    btn.addEventListener('mouseup',    stopRecording);
-    btn.addEventListener('touchstart', function(e) { e.preventDefault(); startRecording(); });
-    btn.addEventListener('touchend',   function(e) { e.preventDefault(); stopRecording(); });
+  // ── Hardware PTT ───────────────────────────────────────────────
+  window.addEventListener('longPressStart', startRecording);
+  window.addEventListener('longPressEnd',   stopRecording);
+  window.addEventListener('sideClick', () => {
+    if (!recording && !busy) startRecording();
+    else if (recording)      stopRecording();
+  });
 
-    // PTT
-    window.addEventListener('longPressStart', startRecording);
-    window.addEventListener('longPressEnd',   stopRecording);
-    window.addEventListener('sideClick', function() {
-      if (!recording) startRecording(); else stopRecording();
-    });
+  // ── On-screen button ───────────────────────────────────────────
+  holdBtn.addEventListener('mousedown',  startRecording);
+  holdBtn.addEventListener('mouseup',    stopRecording);
+  holdBtn.addEventListener('touchstart', e => { e.preventDefault(); startRecording(); });
+  holdBtn.addEventListener('touchend',   e => { e.preventDefault(); stopRecording(); });
 
-    warmMic();
-  </script>
+  // ── Init ───────────────────────────────────────────────────────
+  initMic();
+</script>
 </body>
 </html>
