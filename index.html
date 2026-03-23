@@ -246,10 +246,11 @@
   // ── UI helpers ─────────────────────────────────────────────────
   function setState(s) {
     state = s;
+    const icon = document.getElementById('ptt-icon');
     ring.className = '';
-    if (s === 'listening') { ring.classList.add('listening'); ptt-icon.textContent = '🔴'; }
-    else if (s === 'thinking') { ring.classList.add('thinking'); document.getElementById('ptt-icon').textContent = '💭'; }
-    else { document.getElementById('ptt-icon').textContent = '🎙'; }
+    if (s === 'listening')      { ring.classList.add('listening'); icon.textContent = '🔴'; }
+    else if (s === 'thinking')  { ring.classList.add('thinking');  icon.textContent = '💭'; }
+    else                        { icon.textContent = '🎙'; }
   }
 
   function setLabel(msg) {
