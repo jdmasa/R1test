@@ -1,37 +1,114 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=240, height=320, user-scalable=no, initial-scale=1.0">
-    <title>Archery Target Scorer</title>
-  <script type="module" crossorigin src="./assets/main-DvAAeP4w.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/main-BMSs6gVy.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Vision Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 240px;
+      height: 282px;
+      overflow: hidden;
+      background: #000;
+      color: #0f0;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    #log {
+      padding: 6px;
+      height: 220px;
+      overflow-y: auto;
+      word-break: break-all;
+    }
+    .line { margin-bottom: 3px; }
+    .err  { color: #f44; }
+    .ok   { color: #0f0; }
+    .info { color: #ff0; }
+    button {
+      display: block;
+      width: 100%;
+      height: 31px;
+      background: #111;
+      color: #fff;
+      border: 1px solid #444;
+      border-left: none;
+      border-right: none;
+      font-family: monospace;
+      font-size: 11px;
+      cursor: pointer;
+      margin-top: 2px;
+    }
+    button:active { background: #333; }
+  </style>
 </head>
 <body>
-    <div id="app">
-        <div id="camera-section">
-            <h1>Diana de Tiro</h1>
-            <div id="camera-container">
-                <video id="camera-feed" autoplay playsinline></video>
-                <canvas id="capture-canvas"></canvas>
-                <canvas id="analysis-canvas"></canvas>
-            </div>
-            <div id="controls">
-                <button id="capture-btn" class="touchable">Capturar Foto</button>
-                <button id="analyze-btn" class="touchable" style="display:none;">Analizar Diana</button>
-            </div>
-        </div>
-        
-        <div id="results-section" style="display:none;">
-            <h2>Puntuación</h2>
-            <div id="scores-container"></div>
-            <div id="arrows-info"></div>
-            <button id="new-capture-btn" class="touchable">Nueva Captura</button>
-        </div>
-        
-        <div id="status">
-            <p id="status-text">Presiona botón lateral para capturar</p>
-        </div>
-    </div>
+  <div id="log"></div>
+  <button onclick="testCamera()">[ TEST CAMERA ]</button>
+  <button onclick="testLLM()">[ TEST LLM ]</button>
+
+  <script>
+    function log(msg, type) {
+      const d = document.getElementById('log');
+      const line = document.createElement('div');
+      line.className = 'line ' + (type || 'info');
+      line.textContent = msg;
+      d.appendChild(line);
+      d.scrollTop = d.scrollHeight;
+    }
+
+    log('page loaded OK', 'ok');
+    log('ua: ' + navigator.userAgent.slice(0, 40));
+
+    // Check what APIs are available
+    log('mediaDevices: '  + (!!navigator.mediaDevices),                       navigator.mediaDevices                    ? 'ok' : 'err');
+    log('getUserMedia: '  + (!!navigator.mediaDevices?.getUserMedia),          navigator.mediaDevices?.getUserMedia      ? 'ok' : 'err');
+    log('PluginMsg: '     + (typeof PluginMessageHandler !== 'undefined'),     typeof PluginMessageHandler !== 'undefined' ? 'ok' : 'err');
+    log('creationSensors:'+ (typeof window.creationSensors !== 'undefined'),   typeof window.creationSensors !== 'undefined'? 'ok' : 'err');
+
+    async function testCamera() {
+      log('--- camera test ---', 'info');
+      try {
+        log('requesting camera...');
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+          audio: false
+        });
+        log('stream OK!', 'ok');
+        const tracks = stream.getVideoTracks();
+        log('tracks: ' + tracks.length, 'ok');
+        if (tracks[0]) log('label: ' + tracks[0].label.slice(0, 30), 'ok');
+        stream.getTracks().forEach(t => t.stop());
+        log('stream stopped', 'ok');
+      } catch(e) {
+        log('ERR: ' + e.name, 'err');
+        log(e.message.slice(0, 60), 'err');
+      }
+    }
+
+    async function testLLM() {
+      log('--- LLM test ---', 'info');
+      try {
+        window.onPluginMessage = function(data) {
+          log('response!', 'ok');
+          log(JSON.stringify(data).slice(0, 80), 'ok');
+        };
+        PluginMessageHandler.postMessage(JSON.stringify({
+          message: 'Say "hello" and nothing else.',
+          useLLM: true,
+          wantsR1Response: false
+        }));
+        log('message sent', 'ok');
+      } catch(e) {
+        log('ERR: ' + e.name, 'err');
+        log(e.message.slice(0, 60), 'err');
+      }
+    }
+
+    // Hardware events
+    window.addEventListener('sideClick',  () => { log('PTT click',   'info'); testCamera(); });
+    window.addEventListener('scrollUp',   () => { log('scroll up',   'info'); });
+    window.addEventListener('scrollDown', () => { log('scroll down', 'info'); });
+  </script>
 </body>
 </html>
