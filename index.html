@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Voice</title>
+  <title>Audio Test</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -16,7 +16,7 @@
       font-size: 10px;
     }
     #log {
-      height: 200px;
+      height: 210px;
       padding: 5px;
       overflow-y: auto;
       word-break: break-all;
@@ -38,7 +38,7 @@
     button {
       display: block;
       width: 100%;
-      height: 34px;
+      height: 29px;
       background: #111;
       color: #fff;
       border: none;
@@ -48,19 +48,16 @@
       cursor: pointer;
     }
     button.active { background: #2a0000; color: #f44; }
-    button:active { background: #222; }
   </style>
 </head>
 <body>
   <div id="log"></div>
   <div id="status">starting...</div>
-  <button id="btn">[ HOLD TO TALK ]</button>
+  <button id="btn">[ HOLD TO RECORD ]</button>
 
   <script>
-    // Catch ALL JS errors and show them
-    window.onerror = function(msg, src, line, col, err) {
-      log('JS ERROR: ' + msg + ' (line ' + line + ')', 'err');
-      return false;
+    window.onerror = function(msg, src, line) {
+      log('JS ERR: ' + msg + ' L' + line, 'err');
     };
 
     const btn    = document.getElementById('btn');
@@ -74,138 +71,135 @@
       d.appendChild(el);
       d.scrollTop = d.scrollHeight;
     }
-
     function setStatus(s) { status.textContent = s; }
 
     log('page OK', 'ok');
 
-    // ── 1. Check SR ────────────────────────────────────────────
-    const SR = window.webkitSpeechRecognition || window.SpeechRecognition;
-    log('SR available: ' + !!SR, SR ? 'ok' : 'err');
+    let micStream   = null;
+    let recorder    = null;
+    let chunks      = [];
+    let recording   = false;
 
-    // ── 2. Pre-warm mic ────────────────────────────────────────
+    // ── Pre-warm mic ───────────────────────────────────────────
     async function warmMic() {
       log('requesting mic...', 'info');
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         log('mic OK', 'ok');
-        stream.getTracks().forEach(t => t.stop());
-        setStatus('ready — hold button or PTT');
+        setStatus('ready — hold PTT or button to record');
       } catch(e) {
-        log('mic error: ' + e.name + ' ' + e.message, 'err');
+        log('mic error: ' + e.name, 'err');
         setStatus('mic failed');
       }
     }
 
-    // ── 3. SR instance ─────────────────────────────────────────
-    let recognition = null;
-    let listening   = false;
-
-    function startSR() {
-      if (listening) return;
-      if (!SR) { log('no SR API', 'err'); return; }
-
-      log('building SR...', 'info');
-      listening = true;
+    // ── Start recording ────────────────────────────────────────
+    function startRecording() {
+      if (recording || !micStream) return;
+      recording = true;
+      chunks = [];
       btn.classList.add('active');
       btn.textContent = '[ RELEASE TO SEND ]';
-      setStatus('listening...');
+      setStatus('recording...');
+      log('recording started', 'info');
 
       try {
-        recognition = new SR();
-        recognition.lang           = 'en-US';
-        recognition.interimResults = true;
-        recognition.continuous     = false;
-        recognition.maxAlternatives = 1;
-
-        recognition.onstart  = () => log('SR.onstart fired', 'ok');
-        recognition.onaudiostart = () => log('audio start', 'ok');
-        recognition.onspeechstart = () => log('speech start', 'ok');
-
-        recognition.onresult = function(e) {
-          let text = '';
-          for (let i = e.resultIndex; i < e.results.length; i++) {
-            text += e.results[i][0].transcript;
-          }
-          log('heard: ' + text, 'ok');
-          setStatus(text);
+        recorder = new MediaRecorder(micStream, { mimeType: 'audio/webm;codecs=opus' });
+        recorder.ondataavailable = function(e) {
+          if (e.data.size > 0) chunks.push(e.data);
         };
-
-        recognition.onerror = function(e) {
-          log('SR error: ' + e.error + ' / ' + (e.message || ''), 'err');
-          listening = false;
-          btn.classList.remove('active');
-          btn.textContent = '[ HOLD TO TALK ]';
-          setStatus('error: ' + e.error);
-        };
-
-        recognition.onend = function() {
-          log('SR ended', 'info');
-          listening = false;
-          btn.classList.remove('active');
-          btn.textContent = '[ HOLD TO TALK ]';
-          // Get last status text as transcript and send
-          const text = status.textContent;
-          if (text && !text.startsWith('error') && text !== 'listening...') {
-            sendToLLM(text);
-          }
-        };
-
-        recognition.start();
-        log('SR.start() called', 'ok');
+        recorder.onstop = onRecordingStop;
+        recorder.start(100); // collect chunks every 100ms
+        log('MediaRecorder started', 'ok');
       } catch(e) {
-        log('SR exception: ' + e.message, 'err');
-        listening = false;
+        log('recorder error: ' + e.message, 'err');
+        recording = false;
         btn.classList.remove('active');
-        btn.textContent = '[ HOLD TO TALK ]';
+        btn.textContent = '[ HOLD TO RECORD ]';
       }
     }
 
-    function stopSR() {
-      if (!listening || !recognition) return;
-      log('stopping SR...', 'info');
-      try { recognition.stop(); } catch(e) { log('stop err: ' + e.message, 'err'); }
+    // ── Stop recording ─────────────────────────────────────────
+    function stopRecording() {
+      if (!recording || !recorder) return;
+      log('stopping...', 'info');
+      recorder.stop();
+      recording = false;
+      btn.classList.remove('active');
+      btn.textContent = '[ HOLD TO RECORD ]';
+      setStatus('processing...');
     }
 
-    // ── 4. Send to LLM ─────────────────────────────────────────
-    function sendToLLM(text) {
-      log('sending: ' + text.slice(0, 40), 'info');
-      setStatus('thinking...');
+    // ── On recording complete → convert → send ─────────────────
+    function onRecordingStop() {
+      const blob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
+      const kb   = Math.round(blob.size / 1024);
+      log('blob: ' + kb + 'KB', 'ok');
+
+      // Convert blob to base64
+      const reader = new FileReader();
+      reader.onloadend = function() {
+        const base64 = reader.result; // data:audio/webm;codecs=opus;base64,...
+        log('base64 ready: ' + Math.round(base64.length / 1024) + 'KB', 'ok');
+        sendToLLM(base64);
+      };
+      reader.onerror = function() {
+        log('FileReader error', 'err');
+      };
+      reader.readAsDataURL(blob);
+    }
+
+    // ── Send to LLM ────────────────────────────────────────────
+    function sendToLLM(base64Audio) {
+      setStatus('sending to LLM...');
+      log('sending audio to LLM...', 'info');
+
+      const message =
+        'I am sending you an audio recording. ' +
+        'Please transcribe exactly what is spoken in this audio. ' +
+        'If you cannot process audio, respond with CANNOT_PROCESS_AUDIO. ' +
+        'AUDIO_DATA_URI: ' + base64Audio;
 
       window.onPluginMessage = function(data) {
-        log('LLM response received', 'ok');
-        const reply = (data && data.message) ? data.message : JSON.stringify(data);
-        log(reply.slice(0, 100), 'ok');
-        setStatus('done');
+        const reply = (data && data.message) ? data.message
+                    : (data && data.data)    ? data.data
+                    : JSON.stringify(data);
+
+        log('response: ' + reply.slice(0, 120), 'ok');
+
+        if (reply.includes('CANNOT_PROCESS_AUDIO')) {
+          setStatus('audio not supported by LLM');
+        } else {
+          setStatus('transcription: ' + reply.slice(0, 30));
+        }
       };
 
       try {
         PluginMessageHandler.postMessage(JSON.stringify({
-          message: text,
+          message: message,
           useLLM: true,
           wantsR1Response: false
         }));
-        log('sent to LLM', 'ok');
+        log('sent (' + Math.round(message.length / 1024) + 'KB total)', 'ok');
       } catch(e) {
         log('LLM err: ' + e.message, 'err');
         setStatus('LLM error');
       }
     }
 
-    // ── 5. Button events ───────────────────────────────────────
-    btn.addEventListener('mousedown',  startSR);
-    btn.addEventListener('mouseup',    stopSR);
-    btn.addEventListener('touchstart', function(e) { e.preventDefault(); startSR(); });
-    btn.addEventListener('touchend',   function(e) { e.preventDefault(); stopSR(); });
+    // ── Button events ──────────────────────────────────────────
+    btn.addEventListener('mousedown',  startRecording);
+    btn.addEventListener('mouseup',    stopRecording);
+    btn.addEventListener('touchstart', function(e) { e.preventDefault(); startRecording(); });
+    btn.addEventListener('touchend',   function(e) { e.preventDefault(); stopRecording(); });
 
     // PTT
-    window.addEventListener('longPressStart', startSR);
-    window.addEventListener('longPressEnd',   stopSR);
+    window.addEventListener('longPressStart', startRecording);
+    window.addEventListener('longPressEnd',   stopRecording);
     window.addEventListener('sideClick', function() {
-      if (!listening) startSR(); else stopSR();
+      if (!recording) startRecording(); else stopRecording();
     });
 
-    // ── Init ───────────────────────────────────────────────────
     warmMic();
   </script>
 </body>
