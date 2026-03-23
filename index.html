@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Ghibli Test</title>
+  <title>STT Probe</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -13,45 +13,22 @@
       background: #000;
       color: #0f0;
       font-family: monospace;
-      font-size: 10px;
+      font-size: 11px;
     }
-    #viewfinder {
-      width: 240px;
-      height: 140px;
-      background: #111;
-      position: relative;
-    }
-    #video, #result-img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-    }
-    #result-img { display: none; }
-    #status {
-      height: 14px;
-      line-height: 14px;
-      padding: 0 4px;
-      background: #111;
-      color: #ff0;
-      border-top: 1px solid #222;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    #raw {
-      height: 100px;
-      padding: 4px;
+    #log {
+      padding: 6px;
+      height: 222px;
       overflow-y: auto;
       word-break: break-all;
-      color: #0f0;
-      background: #000;
-      border-top: 1px solid #222;
-      font-size: 9px;
     }
+    .line { margin-bottom: 3px; }
+    .err  { color: #f44; }
+    .ok   { color: #0f0; }
+    .info { color: #ff0; }
     button {
       display: block;
       width: 100%;
-      height: 28px;
+      height: 30px;
       background: #111;
       color: #fff;
       border: none;
@@ -64,98 +41,115 @@
   </style>
 </head>
 <body>
-  <div id="viewfinder">
-    <video id="video" autoplay playsinline muted></video>
-    <img id="result-img" alt="generated">
-  </div>
-  <div id="status">starting...</div>
-  <div id="raw">raw response will appear here...</div>
-  <canvas id="canvas" width="160" height="120" style="display:none"></canvas>
-  <button id="btn">[ CAPTURE + GHIBLIFY ]</button>
+  <div id="log"></div>
+  <button id="btn-sr">[ TEST SPEECHRECOGNITION ]</button>
+  <button id="btn-mr">[ TEST MEDIARECORDER ]</button>
 
   <script>
-    const video     = document.getElementById('video');
-    const canvas    = document.getElementById('canvas');
-    const ctx       = canvas.getContext('2d');
-    const status    = document.getElementById('status');
-    const raw       = document.getElementById('raw');
-    const btn       = document.getElementById('btn');
-    const resultImg = document.getElementById('result-img');
-
-    let busy = false;
-
-    async function initCamera() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' }, audio: false
-        });
-        video.srcObject = stream;
-        status.textContent = 'ready — PTT or tap button';
-      } catch(e) {
-        status.textContent = 'cam error: ' + e.message;
-      }
+    function log(msg, type) {
+      const d = document.getElementById('log');
+      const line = document.createElement('div');
+      line.className = 'line ' + (type || 'info');
+      line.textContent = msg;
+      d.appendChild(line);
+      d.scrollTop = d.scrollHeight;
     }
 
-    function capture() {
-      if (busy) return;
-      busy = true;
-      btn.textContent = '[ ... ]';
-      raw.textContent = '';
+    log('-- API availability --', 'info');
 
-      // Hide any previous result, show live video
-      resultImg.style.display = 'none';
-      video.style.display = 'block';
+    // SpeechRecognition
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    log('SpeechRecognition: '        + (!!window.SpeechRecognition),        window.SpeechRecognition        ? 'ok' : 'err');
+    log('webkitSpeechRecognition: '  + (!!window.webkitSpeechRecognition),  window.webkitSpeechRecognition  ? 'ok' : 'err');
+    log('SpeechGrammarList: '        + (!!window.SpeechGrammarList),        window.SpeechGrammarList        ? 'ok' : 'err');
 
-      ctx.drawImage(video, 0, 0, 160, 120);
-      const base64 = canvas.toDataURL('image/jpeg', 0.5);
-      const kb = Math.round(base64.length / 1024);
-      status.textContent = 'sending (' + kb + 'KB)...';
+    // MediaRecorder
+    log('MediaRecorder: '            + (!!window.MediaRecorder),            window.MediaRecorder            ? 'ok' : 'err');
+    log('AudioContext: '             + (!!window.AudioContext),              window.AudioContext             ? 'ok' : 'err');
 
-      const message =
-        'Transform the scene in this image into Studio Ghibli animation style. ' +
-        'Return your response ONLY as a base64 encoded JPEG data URI in this exact format: ' +
-        'data:image/jpeg;base64,<base64data> ' +
-        'Do not include any other text, just the data URI. ' +
-        'IMAGE_DATA_URI: ' + base64;
-
-      window.onPluginMessage = function(data) {
-        busy = false;
-        btn.textContent = '[ CAPTURE + GHIBLIFY ]';
-
-        const full = JSON.stringify(data);
-        // Show first 300 chars of raw response
-        raw.textContent = full.slice(0, 300) + (full.length > 300 ? '...' : '');
-
-        // Try to extract a data URI from anywhere in the response
-        const dataUriMatch = full.match(/data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+/);
-        if (dataUriMatch) {
-          status.textContent = '🎉 image found! displaying...';
-          resultImg.src = dataUriMatch[0];
-          resultImg.style.display = 'block';
-          video.style.display = 'none';
-        } else {
-          status.textContent = 'no image in response (' + full.length + ' chars)';
-        }
-      };
-
-      try {
-        PluginMessageHandler.postMessage(JSON.stringify({
-          message: message,
-          useLLM: true,
-          wantsR1Response: false
-        }));
-      } catch(e) {
-        status.textContent = 'SDK err: ' + e.message;
-        busy = false;
-        btn.textContent = '[ CAPTURE + GHIBLIFY ]';
-      }
+    // Supported MIME types (if MediaRecorder exists)
+    if (window.MediaRecorder) {
+      const types = [
+        'audio/webm',
+        'audio/webm;codecs=opus',
+        'audio/ogg;codecs=opus',
+        'audio/mp4',
+        'audio/wav',
+      ];
+      log('-- supported mimetypes --', 'info');
+      types.forEach(t => {
+        const supported = MediaRecorder.isTypeSupported(t);
+        log(t + ': ' + supported, supported ? 'ok' : 'err');
+      });
     }
 
-    btn.addEventListener('click', capture);
-    window.addEventListener('sideClick', capture);
-    window.addEventListener('longPressStart', capture);
+    // Test SpeechRecognition live
+    document.getElementById('btn-sr').addEventListener('click', function() {
+      log('-- SR live test --', 'info');
+      if (!SR) { log('SR not available', 'err'); return; }
+      try {
+        const recognition = new SR();
+        recognition.lang = 'en-US';
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
 
-    initCamera();
+        recognition.onstart  = () => log('SR started, speak...', 'ok');
+        recognition.onresult = (e) => {
+          const transcript = e.results[0][0].transcript;
+          log('heard: ' + transcript, 'ok');
+          log('confidence: ' + e.results[0][0].confidence.toFixed(2), 'ok');
+        };
+        recognition.onerror  = (e) => log('SR error: ' + e.error, 'err');
+        recognition.onend    = () => log('SR ended', 'info');
+
+        recognition.start();
+        log('SR.start() called', 'ok');
+      } catch(e) {
+        log('SR exception: ' + e.message, 'err');
+      }
+    });
+
+    // Test MediaRecorder live — hold to record 3 seconds
+    document.getElementById('btn-mr').addEventListener('click', async function() {
+      log('-- MR live test --', 'info');
+      if (!window.MediaRecorder) { log('MediaRecorder not available', 'err'); return; }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        log('mic stream OK', 'ok');
+
+        const recorder = new MediaRecorder(stream);
+        const chunks = [];
+
+        recorder.ondataavailable = e => chunks.push(e.data);
+        recorder.onstop = () => {
+          const blob = new Blob(chunks, { type: recorder.mimeType });
+          log('recorded blob OK', 'ok');
+          log('size: ' + blob.size + ' bytes', 'ok');
+          log('type: ' + blob.type, 'ok');
+          stream.getTracks().forEach(t => t.stop());
+        };
+        recorder.onerror = e => log('MR error: ' + e.error, 'err');
+
+        recorder.start();
+        log('recording 3s...', 'info');
+        setTimeout(() => {
+          recorder.stop();
+          log('stopped', 'info');
+        }, 3000);
+      } catch(e) {
+        log('MR exception: ' + e.message, 'err');
+      }
+    });
+
+    // PTT = trigger SR test
+    window.addEventListener('longPressStart', () => {
+      log('PTT held — triggering SR', 'info');
+      document.getElementById('btn-sr').click();
+    });
+    window.addEventListener('sideClick', () => {
+      log('PTT click — triggering MR', 'info');
+      document.getElementById('btn-mr').click();
+    });
   </script>
 </body>
 </html>
