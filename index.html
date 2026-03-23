@@ -111,6 +111,8 @@
         recorder.onstop = onRecordingStop;
         recorder.start(100); // collect chunks every 100ms
         log('MediaRecorder started', 'ok');
+        // Auto-stop after 2s to keep payload small
+        setTimeout(function() { if (recording) stopRecording(); }, 2000);
       } catch(e) {
         log('recorder error: ' + e.message, 'err');
         recording = false;
@@ -174,13 +176,15 @@
         }
       };
 
+      const payload = JSON.stringify({
+        message: message,
+        useLLM: true,
+        wantsR1Response: false
+      });
+      log('payload size: ' + Math.round(payload.length / 1024) + 'KB', payload.length < 15000 ? 'ok' : 'err');
       try {
-        PluginMessageHandler.postMessage(JSON.stringify({
-          message: message,
-          useLLM: true,
-          wantsR1Response: false
-        }));
-        log('sent (' + Math.round(message.length / 1024) + 'KB total)', 'ok');
+        PluginMessageHandler.postMessage(payload);
+        log('sent', 'ok');
       } catch(e) {
         log('LLM err: ' + e.message, 'err');
         setStatus('LLM error');
