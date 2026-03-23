@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Vision</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 240px;
+      height: 282px;
+      overflow: hidden;
+      background: #000;
+      color: #fff;
+      font-family: monospace;
+      font-size: 11px;
+    }
+
+    #app {
+      width: 240px;
+      height: 282px;
+      display: flex;
+      flex-direction: column;
+      border: 3px solid #333;
+    }
+
+    #viewfinder {
+      position: relative;
+      width: 240px;
+      height: 160px;
+      background: #111;
+      overflow: hidden;
+    }
+
+    #video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    #canvas {
+      display: none;
+    }
+
+    #status {
+      background: #111;
+      color: #0f0;
+      padding: 3px 6px;
+      font-size: 10px;
+      border-top: 1px solid #333;
+      border-bottom: 1px solid #333;
+      height: 18px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #response {
+      flex: 1;
+      padding: 5px 6px;
+      overflow-y: auto;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #eee;
+      background: #000;
+      word-break: break-word;
+    }
+
+    #capture-btn {
+      width: 100%;
+      height: 32px;
+      background: #1a1a1a;
+      color: #fff;
+      border: none;
+      border-top: 1px solid #444;
+      font-family: monospace;
+      font-size: 12px;
+      cursor: pointer;
+      letter-spacing: 1px;
+    }
+
+    #capture-btn:active {
+      background: #333;
+    }
+
+    #capture-btn.loading {
+      color: #888;
+    }
+
+    .overlay-msg {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.7);
+      padding: 4px 8px;
+      border-radius: 3px;
+      font-size: 10px;
+      color: #ff0;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="viewfinder">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas" width="240" height="160"></canvas>
+    </div>
+    <div id="status">initializing camera...</div>
+    <div id="response">Capture an image to begin.</div>
+    <button id="capture-btn">[ CAPTURE ]</button>
+  </div>
+
+  <script>
+    const video    = document.getElementById('video');
+    const canvas   = document.getElementById('canvas');
+    const status   = document.getElementById('status');
+    const response = document.getElementById('response');
+    const btn      = document.getElementById('capture-btn');
+    const ctx      = canvas.getContext('2d');
+
+    let stream = null;
+    let busy   = false;
+
+    // ── Camera init ──────────────────────────────────────────────
+    async function initCamera() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: 240, height: 160 },
+          audio: false
+        });
+        video.srcObject = stream;
+        setStatus('ready — press PTT or CAPTURE');
+      } catch (err) {
+        setStatus('camera error: ' + err.message);
+        response.textContent = 'Could not access camera.\n\n' + err.toString();
+      }
+    }
+
+    // ── Capture + send ───────────────────────────────────────────
+    function captureAndSend() {
+      if (busy) return;
+      if (!stream) { setStatus('no camera stream'); return; }
+
+      busy = true;
+      btn.classList.add('loading');
+      btn.textContent = '[ ... ]';
+
+      // Draw current video frame to canvas
+      ctx.drawImage(video, 0, 0, 240, 160);
+      const base64 = canvas.toDataURL('image/jpeg', 0.6);
+      // base64 looks like: "data:image/jpeg;base64,/9j/4AAQ..."
+
+      setStatus('sending to LLM...');
+      response.textContent = '';
+
+      // Send base64 image embedded in the message string
+      // Two attempts at formatting — trying a data-URI inline approach
+      // and a plain description prompt as fallback context
+      const payload = JSON.stringify({
+        message: `Describe what you see in this image. Image data (base64 JPEG): ${base64}`,
+        useLLM: true,
+        wantsR1Response: false
+      });
+
+      try {
+        PluginMessageHandler.postMessage(payload);
+      } catch (e) {
+        setStatus('PluginMessageHandler unavailable');
+        response.textContent = 'SDK not available outside r1 device.\n\nBase64 captured OK (' +
+          Math.round(base64.length / 1024) + ' KB). Would have sent to LLM.';
+        busy = false;
+        btn.classList.remove('loading');
+        btn.textContent = '[ CAPTURE ]';
+      }
+    }
+
+    // ── Response handler ─────────────────────────────────────────
+    window.onPluginMessage = function(data) {
+      busy = false;
+      btn.classList.remove('loading');
+      btn.textContent = '[ CAPTURE ]';
+
+      let text = '';
+      if (data && data.message) {
+        text = data.message;
+      } else if (data && data.data) {
+        try {
+          const parsed = JSON.parse(data.data);
+          text = parsed.message || parsed.response || JSON.stringify(parsed);
+        } catch (_) {
+          text = data.data;
+        }
+      } else {
+        text = JSON.stringify(data);
+      }
+
+      response.textContent = text;
+      setStatus('done');
+    };
+
+    // ── Hardware events (PTT = capture) ──────────────────────────
+    window.addEventListener('sideClick', captureAndSend);
+    window.addEventListener('longPressStart', captureAndSend);
+
+    // ── Scroll to cycle camera (front/back) ──────────────────────
+    let facingMode = 'environment';
+    window.addEventListener('scrollUp', switchCamera);
+    window.addEventListener('scrollDown', switchCamera);
+
+    async function switchCamera() {
+      if (busy) return;
+      facingMode = facingMode === 'environment' ? 'user' : 'environment';
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode, width: 240, height: 160 },
+          audio: false
+        });
+        video.srcObject = stream;
+        setStatus('camera: ' + facingMode);
+      } catch (e) {
+        setStatus('switch failed: ' + e.message);
+      }
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────
+    function setStatus(msg) {
+      status.textContent = msg;
+    }
+
+    btn.addEventListener('click', captureAndSend);
+
+    // Init
+    initCamera();
+  </script>
+</body>
+</html>
