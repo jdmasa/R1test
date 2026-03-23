@@ -19,14 +19,14 @@
       width: 240px;
       height: 140px;
       background: #111;
-      flex-shrink: 0;
       position: relative;
     }
-    #video {
+    #video, #result-img {
       width: 100%;
       height: 100%;
       object-fit: cover;
     }
+    #result-img { display: none; }
     #status {
       height: 14px;
       line-height: 14px;
@@ -38,7 +38,6 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    /* Raw response dump — scrollable */
     #raw {
       height: 100px;
       padding: 4px;
@@ -65,19 +64,23 @@
   </style>
 </head>
 <body>
-  <div id="viewfinder"><video id="video" autoplay playsinline muted></video></div>
+  <div id="viewfinder">
+    <video id="video" autoplay playsinline muted></video>
+    <img id="result-img" alt="generated">
+  </div>
   <div id="status">starting...</div>
   <div id="raw">raw response will appear here...</div>
   <canvas id="canvas" width="160" height="120" style="display:none"></canvas>
-  <button id="btn">[ CAPTURE + ASK GHIBLI ]</button>
+  <button id="btn">[ CAPTURE + GHIBLIFY ]</button>
 
   <script>
-    const video  = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx    = canvas.getContext('2d');
-    const status = document.getElementById('status');
-    const raw    = document.getElementById('raw');
-    const btn    = document.getElementById('btn');
+    const video     = document.getElementById('video');
+    const canvas    = document.getElementById('canvas');
+    const ctx       = canvas.getContext('2d');
+    const status    = document.getElementById('status');
+    const raw       = document.getElementById('raw');
+    const btn       = document.getElementById('btn');
+    const resultImg = document.getElementById('result-img');
 
     let busy = false;
 
@@ -99,37 +102,39 @@
       btn.textContent = '[ ... ]';
       raw.textContent = '';
 
+      // Hide any previous result, show live video
+      resultImg.style.display = 'none';
+      video.style.display = 'block';
+
       ctx.drawImage(video, 0, 0, 160, 120);
       const base64 = canvas.toDataURL('image/jpeg', 0.5);
       const kb = Math.round(base64.length / 1024);
       status.textContent = 'sending (' + kb + 'KB)...';
 
-      // Ask the LLM to generate a Ghibli-style image
-      // We try several phrasings in one message to probe what it can do
       const message =
-        'I am sending you a photo. Please transform this image into Studio Ghibli animation style. ' +
-        'If you can generate or return an image, please do so. ' +
-        'If you cannot generate images, please respond with: CANNOT_GENERATE and then describe ' +
-        'in detail what a Ghibli-style version of this scene would look like.\n' +
+        'Transform the scene in this image into Studio Ghibli animation style. ' +
+        'Return your response ONLY as a base64 encoded JPEG data URI in this exact format: ' +
+        'data:image/jpeg;base64,<base64data> ' +
+        'Do not include any other text, just the data URI. ' +
         'IMAGE_DATA_URI: ' + base64;
 
       window.onPluginMessage = function(data) {
         busy = false;
-        btn.textContent = '[ CAPTURE + ASK GHIBLI ]';
+        btn.textContent = '[ CAPTURE + GHIBLIFY ]';
 
-        // Dump the FULL raw response object
-        const full = JSON.stringify(data, null, 2);
-        raw.textContent = full;
-        status.textContent = 'done — ' + full.length + ' chars';
+        const full = JSON.stringify(data);
+        // Show first 300 chars of raw response
+        raw.textContent = full.slice(0, 300) + (full.length > 300 ? '...' : '');
 
-        // Also check if there's anything that looks like an image URL or base64
-        const str = JSON.stringify(data);
-        if (str.includes('data:image')) {
-          status.textContent = '🎉 image data found in response!';
-        } else if (str.includes('http') && (str.includes('.png') || str.includes('.jpg') || str.includes('.webp'))) {
-          status.textContent = '🎉 image URL found in response!';
-        } else if (str.includes('CANNOT_GENERATE')) {
-          status.textContent = 'no image gen — text only';
+        // Try to extract a data URI from anywhere in the response
+        const dataUriMatch = full.match(/data:image\/[a-z]+;base64,[A-Za-z0-9+/=]+/);
+        if (dataUriMatch) {
+          status.textContent = '🎉 image found! displaying...';
+          resultImg.src = dataUriMatch[0];
+          resultImg.style.display = 'block';
+          video.style.display = 'none';
+        } else {
+          status.textContent = 'no image in response (' + full.length + ' chars)';
         }
       };
 
@@ -142,7 +147,7 @@
       } catch(e) {
         status.textContent = 'SDK err: ' + e.message;
         busy = false;
-        btn.textContent = '[ CAPTURE + ASK GHIBLI ]';
+        btn.textContent = '[ CAPTURE + GHIBLIFY ]';
       }
     }
 
