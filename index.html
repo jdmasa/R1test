@@ -10,270 +10,203 @@
       width: 240px;
       height: 282px;
       overflow: hidden;
-      background: #0a0a0a;
-      color: #fff;
-      font-family: monospace;
-      font-size: 11px;
-    }
-    #app {
-      width: 240px;
-      height: 282px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-
-    /* ── Big PTT indicator ── */
-    #ptt-ring {
-      margin-top: 20px;
-      width: 90px;
-      height: 90px;
-      border-radius: 50%;
-      border: 3px solid #333;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: border-color 0.1s, box-shadow 0.1s;
-    }
-    #ptt-ring.listening {
-      border-color: #f44;
-      box-shadow: 0 0 16px #f44a;
-    }
-    #ptt-ring.thinking {
-      border-color: #4af;
-      box-shadow: 0 0 16px #4afa;
-    }
-    #ptt-icon {
-      font-size: 32px;
-    }
-
-    /* ── State label ── */
-    #state-label {
-      margin-top: 8px;
-      font-size: 10px;
-      color: #666;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-    }
-
-    /* ── Transcript ── */
-    #transcript {
-      margin-top: 10px;
-      width: 220px;
-      min-height: 28px;
-      padding: 4px 6px;
-      background: #111;
-      border: 1px solid #222;
-      border-radius: 4px;
-      color: #ff0;
-      font-size: 10px;
-      line-height: 1.4;
-      word-break: break-word;
-    }
-
-    /* ── Response ── */
-    #response {
-      margin-top: 6px;
-      width: 220px;
-      flex: 1;
-      padding: 5px 6px;
-      overflow-y: auto;
       background: #000;
-      border: 1px solid #222;
-      border-radius: 4px;
-      color: #ddd;
-      font-size: 11px;
-      line-height: 1.45;
-      word-break: break-word;
-    }
-
-    /* ── Hold button ── */
-    #hold-btn {
-      width: 100%;
-      height: 30px;
-      background: #1a1a1a;
-      color: #888;
-      border: none;
-      border-top: 1px solid #333;
+      color: #0f0;
       font-family: monospace;
       font-size: 10px;
+    }
+    #log {
+      height: 200px;
+      padding: 5px;
+      overflow-y: auto;
+      word-break: break-all;
+    }
+    .line { margin-bottom: 2px; }
+    .err  { color: #f44; }
+    .ok   { color: #0f0; }
+    .info { color: #ff0; }
+    #status {
+      height: 14px;
+      line-height: 14px;
+      padding: 0 5px;
+      background: #111;
+      color: #0ff;
+      border-top: 1px solid #222;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    button {
+      display: block;
+      width: 100%;
+      height: 34px;
+      background: #111;
+      color: #fff;
+      border: none;
+      border-top: 1px solid #444;
+      font-family: monospace;
+      font-size: 11px;
       cursor: pointer;
-      flex-shrink: 0;
-      margin-top: 6px;
     }
-    #hold-btn.active {
-      background: #2a0000;
-      color: #f44;
-    }
+    button.active { background: #2a0000; color: #f44; }
+    button:active { background: #222; }
   </style>
 </head>
 <body>
-<div id="app">
-  <div id="ptt-ring"><span id="ptt-icon">🎙</span></div>
-  <div id="state-label">hold PTT to speak</div>
-  <div id="transcript">—</div>
-  <div id="response">Waiting for your voice...</div>
-  <button id="hold-btn">[ HOLD TO TALK ]</button>
-</div>
+  <div id="log"></div>
+  <div id="status">starting...</div>
+  <button id="btn">[ HOLD TO TALK ]</button>
 
-<script>
-  const ring        = document.getElementById('ptt-ring');
-  const stateLabel  = document.getElementById('state-label');
-  const transcript  = document.getElementById('transcript');
-  const response    = document.getElementById('response');
-  const holdBtn     = document.getElementById('hold-btn');
+  <script>
+    // Catch ALL JS errors and show them
+    window.onerror = function(msg, src, line, col, err) {
+      log('JS ERROR: ' + msg + ' (line ' + line + ')', 'err');
+      return false;
+    };
 
-  const SR = window.webkitSpeechRecognition;
-  let recognition   = null;
-  let lastTranscript = '';
-  let state         = 'idle'; // idle | listening | thinking
+    const btn    = document.getElementById('btn');
+    const status = document.getElementById('status');
 
-  // ── Pre-warm mic permission ────────────────────────────────────
-  async function warmMic() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      stream.getTracks().forEach(t => t.stop()); // just needed for permission
-      setState('idle');
-      setLabel('hold PTT to speak');
-    } catch(e) {
-      setLabel('mic error: ' + e.message);
+    function log(msg, type) {
+      const d = document.getElementById('log');
+      const el = document.createElement('div');
+      el.className = 'line ' + (type || 'info');
+      el.textContent = msg;
+      d.appendChild(el);
+      d.scrollTop = d.scrollHeight;
     }
-  }
 
-  // ── Speech Recognition setup ───────────────────────────────────
-  function buildRecognition() {
-    const r = new SR();
-    r.lang             = 'en-US';
-    r.interimResults   = true;
-    r.continuous       = false;
-    r.maxAlternatives  = 1;
+    function setStatus(s) { status.textContent = s; }
 
-    r.onresult = function(e) {
-      let interim = '';
-      let final   = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) final += t;
-        else interim += t;
+    log('page OK', 'ok');
+
+    // ── 1. Check SR ────────────────────────────────────────────
+    const SR = window.webkitSpeechRecognition || window.SpeechRecognition;
+    log('SR available: ' + !!SR, SR ? 'ok' : 'err');
+
+    // ── 2. Pre-warm mic ────────────────────────────────────────
+    async function warmMic() {
+      log('requesting mic...', 'info');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        log('mic OK', 'ok');
+        stream.getTracks().forEach(t => t.stop());
+        setStatus('ready — hold button or PTT');
+      } catch(e) {
+        log('mic error: ' + e.name + ' ' + e.message, 'err');
+        setStatus('mic failed');
       }
-      transcript.textContent = final || interim || '...';
-      if (final) lastTranscript = final;
-    };
+    }
 
-    r.onerror = function(e) {
-      if (e.error === 'no-speech') {
-        setLabel('no speech detected');
-      } else {
-        setLabel('SR error: ' + e.error);
+    // ── 3. SR instance ─────────────────────────────────────────
+    let recognition = null;
+    let listening   = false;
+
+    function startSR() {
+      if (listening) return;
+      if (!SR) { log('no SR API', 'err'); return; }
+
+      log('building SR...', 'info');
+      listening = true;
+      btn.classList.add('active');
+      btn.textContent = '[ RELEASE TO SEND ]';
+      setStatus('listening...');
+
+      try {
+        recognition = new SR();
+        recognition.lang           = 'en-US';
+        recognition.interimResults = true;
+        recognition.continuous     = false;
+        recognition.maxAlternatives = 1;
+
+        recognition.onstart  = () => log('SR.onstart fired', 'ok');
+        recognition.onaudiostart = () => log('audio start', 'ok');
+        recognition.onspeechstart = () => log('speech start', 'ok');
+
+        recognition.onresult = function(e) {
+          let text = '';
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            text += e.results[i][0].transcript;
+          }
+          log('heard: ' + text, 'ok');
+          setStatus(text);
+        };
+
+        recognition.onerror = function(e) {
+          log('SR error: ' + e.error + ' / ' + (e.message || ''), 'err');
+          listening = false;
+          btn.classList.remove('active');
+          btn.textContent = '[ HOLD TO TALK ]';
+          setStatus('error: ' + e.error);
+        };
+
+        recognition.onend = function() {
+          log('SR ended', 'info');
+          listening = false;
+          btn.classList.remove('active');
+          btn.textContent = '[ HOLD TO TALK ]';
+          // Get last status text as transcript and send
+          const text = status.textContent;
+          if (text && !text.startsWith('error') && text !== 'listening...') {
+            sendToLLM(text);
+          }
+        };
+
+        recognition.start();
+        log('SR.start() called', 'ok');
+      } catch(e) {
+        log('SR exception: ' + e.message, 'err');
+        listening = false;
+        btn.classList.remove('active');
+        btn.textContent = '[ HOLD TO TALK ]';
       }
-      setState('idle');
-    };
+    }
 
-    r.onend = function() {
-      // Only send if we were still in listening state (not already thinking)
-      if (state === 'listening') {
-        const text = lastTranscript || transcript.textContent;
-        if (text && text !== '—' && text !== '...') {
-          sendToLLM(text);
-        } else {
-          setState('idle');
-          setLabel('hold PTT to speak');
-        }
+    function stopSR() {
+      if (!listening || !recognition) return;
+      log('stopping SR...', 'info');
+      try { recognition.stop(); } catch(e) { log('stop err: ' + e.message, 'err'); }
+    }
+
+    // ── 4. Send to LLM ─────────────────────────────────────────
+    function sendToLLM(text) {
+      log('sending: ' + text.slice(0, 40), 'info');
+      setStatus('thinking...');
+
+      window.onPluginMessage = function(data) {
+        log('LLM response received', 'ok');
+        const reply = (data && data.message) ? data.message : JSON.stringify(data);
+        log(reply.slice(0, 100), 'ok');
+        setStatus('done');
+      };
+
+      try {
+        PluginMessageHandler.postMessage(JSON.stringify({
+          message: text,
+          useLLM: true,
+          wantsR1Response: false
+        }));
+        log('sent to LLM', 'ok');
+      } catch(e) {
+        log('LLM err: ' + e.message, 'err');
+        setStatus('LLM error');
       }
-    };
-
-    return r;
-  }
-
-  // ── Start listening ────────────────────────────────────────────
-  function startListening() {
-    if (state !== 'idle') return;
-    lastTranscript = '';
-    transcript.textContent = '...';
-    setState('listening');
-    setLabel('listening...');
-    holdBtn.classList.add('active');
-    holdBtn.textContent = '[ RELEASE TO SEND ]';
-
-    recognition = buildRecognition();
-    try {
-      recognition.start();
-    } catch(e) {
-      setLabel('SR start error: ' + e.message);
-      setState('idle');
     }
-  }
 
-  // ── Stop listening ─────────────────────────────────────────────
-  function stopListening() {
-    holdBtn.classList.remove('active');
-    holdBtn.textContent = '[ HOLD TO TALK ]';
-    if (recognition && state === 'listening') {
-      try { recognition.stop(); } catch(_) {}
-    }
-  }
+    // ── 5. Button events ───────────────────────────────────────
+    btn.addEventListener('mousedown',  startSR);
+    btn.addEventListener('mouseup',    stopSR);
+    btn.addEventListener('touchstart', function(e) { e.preventDefault(); startSR(); });
+    btn.addEventListener('touchend',   function(e) { e.preventDefault(); stopSR(); });
 
-  // ── Send to LLM ────────────────────────────────────────────────
-  function sendToLLM(text) {
-    setState('thinking');
-    setLabel('thinking...');
-    response.textContent = '';
+    // PTT
+    window.addEventListener('longPressStart', startSR);
+    window.addEventListener('longPressEnd',   stopSR);
+    window.addEventListener('sideClick', function() {
+      if (!listening) startSR(); else stopSR();
+    });
 
-    window.onPluginMessage = function(data) {
-      let reply = '';
-      if (data && data.message)   reply = data.message;
-      else if (data && data.data) reply = data.data;
-      else                        reply = JSON.stringify(data);
-
-      response.textContent = reply;
-      setState('idle');
-      setLabel('hold PTT to speak');
-    };
-
-    try {
-      PluginMessageHandler.postMessage(JSON.stringify({
-        message: text,
-        useLLM: true,
-        wantsR1Response: false
-      }));
-    } catch(e) {
-      response.textContent = 'SDK error: ' + e.message;
-      setState('idle');
-      setLabel('hold PTT to speak');
-    }
-  }
-
-  // ── UI helpers ─────────────────────────────────────────────────
-  function setState(s) {
-    state = s;
-    const icon = document.getElementById('ptt-icon');
-    ring.className = '';
-    if (s === 'listening')      { ring.classList.add('listening'); icon.textContent = '🔴'; }
-    else if (s === 'thinking')  { ring.classList.add('thinking');  icon.textContent = '💭'; }
-    else                        { icon.textContent = '🎙'; }
-  }
-
-  function setLabel(msg) {
-    stateLabel.textContent = msg;
-  }
-
-  // ── Hardware PTT (side button) ─────────────────────────────────
-  window.addEventListener('longPressStart', startListening);
-  window.addEventListener('longPressEnd',   stopListening);
-  window.addEventListener('sideClick',      () => {
-    if (state === 'idle')      startListening();
-    else if (state === 'listening') stopListening();
-  });
-
-  // ── On-screen hold button ──────────────────────────────────────
-  holdBtn.addEventListener('mousedown',  startListening);
-  holdBtn.addEventListener('mouseup',    stopListening);
-  holdBtn.addEventListener('touchstart', function(e) { e.preventDefault(); startListening(); });
-  holdBtn.addEventListener('touchend',   function(e) { e.preventDefault(); stopListening(); });
-
-  // ── Init ───────────────────────────────────────────────────────
-  setLabel('requesting mic...');
-  warmMic();
-</script>
+    // ── Init ───────────────────────────────────────────────────
+    warmMic();
+  </script>
 </body>
 </html>
