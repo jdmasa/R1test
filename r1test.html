@@ -149,7 +149,7 @@
   // ── Init mic ───────────────────────────────────────────────────
   async function initMic() {
     setState('idle');
-    label.textContent = 'requesting mic...';
+    label.textContent = 'Press to start...';
     try {
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       setState('ready');
