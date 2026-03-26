@@ -74,17 +74,6 @@
       color: #555;
     }
 
-    #boot-button {
-      padding: 10px 20px;
-      background: #1a1a1a;
-      border: 1px solid #444;
-      color: #aaa;
-      cursor: pointer;
-      font-family: monospace;
-      font-size: 10px;
-      border-radius: 4px;
-    }
-
     /* ── Camera / preview layer ── */
     #video, #preview {
       position: absolute;
@@ -209,13 +198,12 @@
 <body>
 <div id="app">
 
-  <!-- Boot screen - must tap to initialize plugin -->
+  <!-- Boot screen - side button will boot -->
   <div id="boot-screen">
     <div class="boot-text">
       <div class="boot-title">PIXELART CAM</div>
-      <div class="boot-subtitle">tap to start</div>
+      <div class="boot-subtitle">press side button</div>
     </div>
-    <button id="boot-button">START</button>
   </div>
 
   <!-- Camera and preview images -->
@@ -243,128 +231,17 @@
 
 </div>
 <script>
-  // ─── Hardware Handler Class ───────────────────────────────────────────────
-  class HardwareHandler {
-    constructor() {
-      this.sideButtonEnabled = true;
-      this.scrollWheelEnabled = true;
-      this.eventListeners = new Map();
-    }
-
-    init(options = {}) {
-      this.sideButtonEnabled = options.sideButtonEnabled ?? true;
-      this.scrollWheelEnabled = options.scrollWheelEnabled ?? true;
-      if (this.sideButtonEnabled) this.setupSideButtonListener();
-      if (this.scrollWheelEnabled) this.setupScrollWheelListener();
-      if (options.keyboardFallback !== false) this.setupKeyboardFallback();
-    }
-
-    setupSideButtonListener() {
-      window.addEventListener('sideClick', e => {
-        if (this.sideButtonEnabled) this.handleSideButtonClick(e);
-      });
-    }
-
-    setupScrollWheelListener() {
-      window.addEventListener('scrollUp', e => {
-        if (this.scrollWheelEnabled) this.handleScrollWheel({ direction: 'up', event: e });
-      });
-      window.addEventListener('scrollDown', e => {
-        if (this.scrollWheelEnabled) this.handleScrollWheel({ direction: 'down', event: e });
-      });
-    }
-
-    setupKeyboardFallback() {
-      window.addEventListener('keydown', e => {
-        if (e.code === 'Space') {
-          e.preventDefault();
-          window.dispatchEvent(new CustomEvent('sideClick', { detail: { source: 'keyboard' } }));
-        }
-      });
-    }
-
-    handleSideButtonClick(e) {
-      (this.eventListeners.get('sideButton') || []).forEach(handler => handler(e));
-    }
-
-    handleScrollWheel(e) {
-      (this.eventListeners.get('scrollWheel') || []).forEach(handler => handler({ direction: e.direction, event: e.event }));
-    }
-
-    on(event, handler) {
-      if (!this.eventListeners.has(event)) this.eventListeners.set(event, []);
-      this.eventListeners.get(event).push(handler);
-    }
+  // ─── Plugin Bridge Setup ──────────────────────────────────────────────────
+  // Setup window.onPluginMessage FIRST - before anything else
+  if (!window.onPluginMessage) {
+    window.onPluginMessage = function(data) {
+      console.log('onPluginMessage called:', data);
+      window.dispatchEvent(new CustomEvent('pluginMessage', { detail: data }));
+    };
   }
 
-  // ─── Plugin Bridge Class ──────────────────────────────────────────────────
-  class PluginBridge {
-    constructor() {
-      this.isFlutterAvailable = this.checkFlutterAvailability();
-      this.setupPluginMessageHandler();
-    }
-
-    checkFlutterAvailability() {
-      return typeof window !== 'undefined' && (
-        window.FlutterButtonHandler !== undefined ||
-        window.closeWebView !== undefined ||
-        window.PluginMessageHandler !== undefined ||
-        window.TouchEventHandler !== undefined
-      );
-    }
-
-    setupPluginMessageHandler() {
-      if (typeof window !== 'undefined' && !window.onPluginMessage) {
-        window.onPluginMessage = function(data) {
-          window.dispatchEvent(new CustomEvent('pluginMessage', { detail: data }));
-        };
-      }
-    }
-
-    sendPluginMessage(data) {
-      if (!window.PluginMessageHandler) {
-        console.warn('PluginMessageHandler not available');
-        return false;
-      }
-      try {
-        window.PluginMessageHandler.postMessage(JSON.stringify(data));
-        return true;
-      } catch (err) {
-        console.error('Failed to send plugin message:', err);
-        return false;
-      }
-    }
-
-    sendData(data) {
-      if (!window.FlutterButtonHandler) return false;
-      try {
-        window.FlutterButtonHandler.postMessage(JSON.stringify(data));
-        return true;
-      } catch (err) {
-        console.error('Failed to send data:', err);
-        return false;
-      }
-    }
-
-    onPluginMessage(callback) {
-      if (typeof window !== 'undefined') {
-        window.addEventListener('pluginMessage', e => callback(e.detail));
-      }
-    }
-  }
-
-  // ─── Initialize hardware and plugin handlers ──────────────────────────────
-  const hardware = new HardwareHandler();
-  const plugin = new PluginBridge();
-
-  hardware.init({
-    sideButtonEnabled: true,
-    scrollWheelEnabled: true,
-    keyboardFallback: true
-  });
-
-  console.log('Hardware handlers initialized');
-  console.log('Flutter available:', plugin.isFlutterAvailable);
+  const isR1 = typeof PluginMessageHandler !== 'undefined';
+  console.log('Is R1:', isR1);
 
   // ─── Style list ───────────────────────────────────────────────────────────
   const STYLES = [
@@ -388,19 +265,11 @@
   let styleIndex = 0;
 
   // ─── State ────────────────────────────────────────────────────────────────
-  // 'boot'       — waiting for user to tap start
-  // 'initializing' — camera is loading
-  // 'live'       — camera is showing, ready to shoot
-  // 'sending'    — captured, sending to bridge, spinner up
-  // 'processing' — bridge confirmed receipt, spinner still up
-  // 'done'       — complete (or timed out), reset available
-  // 'error'      — error occurred
   let state = 'boot';
 
   // ─── DOM refs ─────────────────────────────────────────────────────────────
   const appEl       = document.getElementById('app');
   const bootScreen  = document.getElementById('boot-screen');
-  const bootButton  = document.getElementById('boot-button');
   const videoEl     = document.getElementById('video');
   const previewEl   = document.getElementById('preview');
   const overlayEl   = document.getElementById('overlay');
@@ -412,7 +281,7 @@
   // ─── UI helpers ───────────────────────────────────────────────────────────
   function setState(s) {
     state = s;
-    console.log('State changed to:', s);
+    console.log('setState:', s);
     switch (s) {
       case 'boot':
         bootScreen.style.display = 'flex';
@@ -421,12 +290,12 @@
         overlayEl.classList.remove('visible');
         btnReset.classList.remove('visible');
         appEl.style.borderColor = '#222';
-        setStatus('tap to start');
+        setStatus('press side button');
         break;
       case 'initializing':
         bootScreen.style.display = 'flex';
-        bootButton.disabled = true;
         setStatus('loading camera…');
+        appEl.style.borderColor = '#334499';
         break;
       case 'live':
         bootScreen.style.display = 'none';
@@ -435,7 +304,7 @@
         overlayEl.classList.remove('visible');
         btnReset.classList.remove('visible');
         appEl.style.borderColor = '#222';
-        setStatus('▲�� change style · side btn shoot');
+        setStatus('▲▼ change style · side btn shoot');
         break;
       case 'sending':
         videoEl.style.display = 'none';
@@ -473,7 +342,12 @@
     styleNameEl.textContent = STYLES[styleIndex].name;
   }
 
-  // ─── Enumerate cameras ────────────────────────────────────────────────────
+  // ─── Initialize camera ────────────────────────────────────────────────────
+  let cameraStream = null;
+  let cameraIndex = 0;
+  let availableCameras = [];
+  let isInitializing = false;
+
   async function enumerateDevices() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -497,46 +371,53 @@
     };
   }
 
-  // ─── Initialize camera ────────────────────────────────────────────────────
-  let cameraStream = null;
-  let cameraIndex = 0;
-  let availableCameras = [];
-
   async function initializeCamera() {
-    if (state !== 'initializing') return;
+    if (isInitializing || state !== 'boot') {
+      console.log('Cannot initialize: isInitializing=' + isInitializing + ', state=' + state);
+      return;
+    }
+
+    isInitializing = true;
+    setState('initializing');
 
     try {
-      console.log('Enumerating cameras...');
+      console.log('Step 1: Enumerating cameras...');
       availableCameras = await enumerateDevices();
       cameraIndex = 0;
 
-      console.log('Getting user media...');
+      console.log('Step 2: Getting user media with constraints...');
       const constraints = getCameraConstraints(cameraIndex, availableCameras);
+      console.log('Constraints:', JSON.stringify(constraints));
+      
       cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+      console.log('Step 3: Stream acquired, setting srcObject...');
       videoEl.srcObject = cameraStream;
 
-      console.log('Waiting for video metadata...');
-      await new Promise(resolve => {
+      console.log('Step 4: Waiting for metadata...');
+      await new Promise((resolve) => {
         videoEl.onloadedmetadata = async () => {
+          console.log('Step 5: Metadata loaded, calling play()...');
           try {
-            console.log('Playing video...');
             await videoEl.play();
-            console.log('Video playing, waiting for stream to stabilize...');
-            setTimeout(resolve, 100);  // ← CRITICAL: Give stream time to stabilize
+            console.log('Step 6: Video playing, stabilizing...');
+            setTimeout(() => {
+              console.log('Step 7: Stream stabilized');
+              resolve();
+            }, 150);
           } catch (err) {
-            console.error('Video play error:', err);
+            console.error('Play error:', err);
             resolve();
           }
         };
       });
 
-      console.log('Camera initialized successfully');
+      console.log('Step 8: Camera ready!');
       updateStyleLabel();
       setState('live');
 
-      // Setup plugin message handler AFTER camera is ready
-      plugin.onPluginMessage(data => {
-        console.log('Received plugin message:', data);
+      // Setup message handler after camera is ready
+      window.onPluginMessage = function(data) {
+        console.log('Plugin message received:', data);
         if (data && data.status === 'processing') {
           setState('processing');
         } else if (data && data.status === 'complete') {
@@ -545,32 +426,16 @@
           setStatus('error: ' + data.error);
           setState('error');
         }
-      });
-
-      plugin.isFlutterAvailable && plugin.sendData({
-        status: 'camera_ready',
-        availableCameras: availableCameras.length,
-        timestamp: Date.now()
-      });
+      };
 
     } catch (err) {
-      console.error('Camera access error:', err);
+      console.error('Camera initialization error:', err);
       setStatus('camera error: ' + err.message);
       appEl.style.borderColor = '#662222';
       setState('error');
-      plugin.isFlutterAvailable && plugin.sendData({
-        status: 'camera_error',
-        error: err.message,
-        timestamp: Date.now()
-      });
+    } finally {
+      isInitializing = false;
     }
-  }
-
-  // ─── Boot app (triggered by user tap) ─────────────────────────────────────
-  async function bootApp() {
-    if (state !== 'boot') return;
-    setState('initializing');
-    await initializeCamera();
   }
 
   // ─── Capture & send ───────────────────────────────────────────────────────
@@ -581,13 +446,11 @@
     }
 
     if (!cameraStream || !videoEl.videoWidth) {
-      console.log('Camera stream not ready');
-      setStatus('camera not ready');
+      console.log('Camera not ready');
       return;
     }
 
-    console.log('Shooting...');
-    // Capture full resolution frame
+    console.log('Capturing photo...');
     const canvas = document.createElement('canvas');
     canvas.width  = videoEl.videoWidth  || 640;
     canvas.height = videoEl.videoHeight || 480;
@@ -595,16 +458,15 @@
 
     const dataUri = canvas.toDataURL('image/jpeg', 0.8);
 
-    // Show freeze-frame as preview
     previewEl.src = dataUri;
     setState('sending');
 
     const style = STYLES[styleIndex];
 
-    // Register response handler BEFORE sending
+    // Register response handler
     let fallbackTimer = null;
     window.onPluginMessage = function(data) {
-      console.log('onPluginMessage received:', data);
+      console.log('Response received:', data);
       if (data && data.status === 'processing') {
         setState('processing');
       } else if (data && data.status === 'complete') {
@@ -617,7 +479,6 @@
       }
     };
 
-    // Also listen via CustomEvent
     function onCustomEvent(e) {
       window.onPluginMessage && window.onPluginMessage(e.detail);
       window.removeEventListener('pluginMessage', onCustomEvent);
@@ -625,16 +486,15 @@
     window.addEventListener('pluginMessage', onCustomEvent);
 
     // Send to bridge
-    if (plugin.isFlutterAvailable) {
-      console.log('Sending to plugin bridge...');
-      plugin.sendPluginMessage({
-        message: style.prompt,
-        pluginId: 'com.r1.pixelart',
+    if (isR1) {
+      console.log('Sending to R1 bridge...');
+      PluginMessageHandler.postMessage(JSON.stringify({
+        message:     style.prompt,
+        pluginId:    'com.r1.pixelart',
         imageBase64: dataUri
-      });
+      }));
     } else {
-      // Desktop simulation
-      console.log('Desktop mode: simulating plugin response');
+      console.log('Desktop mode: simulating response...');
       setTimeout(() => { window.onPluginMessage({ status: 'processing' }); }, 600);
       setTimeout(() => { window.onPluginMessage({ status: 'complete' }); }, 3000);
     }
@@ -642,16 +502,16 @@
     // Fallback timeout
     fallbackTimer = setTimeout(() => {
       if (state === 'sending' || state === 'processing') {
-        console.log('Fallback timeout reached, marking as done');
+        console.log('Fallback timeout triggered');
         setState('done');
         setStatus('sent · result in r1 gallery');
       }
     }, 15000);
   }
 
-  // ─── Reset to live camera ─────────────────────────────────────────────────
+  // ─── Reset ────────────────────────────────────────────────────────────────
   function reset() {
-    console.log('Resetting to live camera');
+    console.log('Resetting...');
     window.onPluginMessage = null;
     setState('live');
   }
@@ -671,11 +531,12 @@
     setStatus(`${STYLES[styleIndex].name} · side btn to shoot`);
   }
 
-  // ─── Hardware event handlers ──────────────────────────────────────────────
-  hardware.on('sideButton', () => {
-    console.log('Side button pressed, state:', state);
+  // ─── Register global event listeners ───────────────────────────────────────
+  // These are registered EARLY and work throughout the app lifecycle
+  window.addEventListener('sideClick', () => {
+    console.log('sideClick event, state:', state);
     if (state === 'boot') {
-      bootApp();
+      initializeCamera();
     } else if (state === 'live') {
       shoot();
     } else if (previewEl.style.display === 'block') {
@@ -683,25 +544,31 @@
     }
   });
 
-  hardware.on('scrollWheel', e => {
-    console.log('Scroll wheel:', e.direction, 'state:', state);
-    if (state !== 'live') return;
-    if (e.direction === 'up') {
-      prevStyle();
-    } else if (e.direction === 'down') {
-      nextStyle();
+  window.addEventListener('longPressStart', () => {
+    console.log('longPressStart event, state:', state);
+    if (state === 'boot') {
+      initializeCamera();
+    } else if (state === 'live') {
+      shoot();
     }
   });
 
+  window.addEventListener('scrollDown', () => {
+    console.log('scrollDown event');
+    nextStyle();
+  });
+
+  window.addEventListener('scrollUp', () => {
+    console.log('scrollUp event');
+    prevStyle();
+  });
+
   // ─── Touch events ─────────────────────────────────────────────────────────
-  document.body.addEventListener('touchstart', e => {
-    e.preventDefault();
+  document.addEventListener('touchstart', e => {
     const t = e.target;
     console.log('Touch on:', t.id || t.tagName);
-
-    if (t.id === 'boot-button' || t.closest('#boot-button')) {
-      bootApp();
-    } else if (t === videoEl && state === 'live') {
+    
+    if (t === videoEl && state === 'live') {
       shoot();
     } else if (t === previewEl) {
       reset();
@@ -715,19 +582,18 @@
   }, { passive: false });
 
   // ─── Click fallbacks for desktop ──────────────────────────────────────────
-  bootButton.addEventListener('click', bootApp);
   videoEl.addEventListener('click', shoot);
   btnReset.addEventListener('click', reset);
   document.getElementById('arr-up').addEventListener('click', prevStyle);
   document.getElementById('arr-down').addEventListener('click', nextStyle);
 
-  // ─── Initialize UI on load ────────────────────────────────────────────────
+  // ─── Initialize ────────────────────────────────────────────────────────────
   window.addEventListener('load', () => {
-    console.log('Page loaded, app ready for boot');
+    console.log('Page loaded, initializing...');
     setState('boot');
   });
 
-  console.log('Pixelart Cam app script loaded');
+  console.log('App script loaded and ready');
 </script>
 </body>
 </html>
