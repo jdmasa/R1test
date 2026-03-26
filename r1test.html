@@ -40,6 +40,51 @@
       transition: border-color 0.2s ease;
     }
 
+    /* ── Boot screen ── */
+    #boot-screen {
+      position: absolute;
+      top: 0; left: 0;
+      width: 240px;
+      height: 282px;
+      background: #000;
+      border: 4px solid #222;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      gap: 20px;
+    }
+
+    #boot-screen .boot-text {
+      text-align: center;
+      color: #888;
+      font-family: monospace;
+    }
+
+    #boot-screen .boot-title {
+      margin-bottom: 10px;
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    #boot-screen .boot-subtitle {
+      font-size: 10px;
+      color: #555;
+    }
+
+    #boot-button {
+      padding: 10px 20px;
+      background: #1a1a1a;
+      border: 1px solid #444;
+      color: #aaa;
+      cursor: pointer;
+      font-family: monospace;
+      font-size: 10px;
+      border-radius: 4px;
+    }
+
     /* ── Camera / preview layer ── */
     #video, #preview {
       position: absolute;
@@ -96,7 +141,7 @@
       border: 3px solid #333;
       border-top-color: #6af;
       border-radius: 50%;
-      animation: spin 0.8s linear infe;
+      animation: spin 0.8s linear infinite;
     }
 
     @keyframes spin {
@@ -163,32 +208,18 @@
 </head>
 <body>
 <div id="app">
- <!-- Boot screen - user must tap to start -->
-  <div id="boot-screen" style="
-    position: absolute;
-    top: 0; left: 0;
-    width: 240px;
-    height: 282px;
-    background: #000;
-    border: 4px solid #222;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 20px;
-    z-index: 100;
-    font-family: monospace;
-    color: #888;
-  ">
-    <div style="text-align: center; font-size: 12px; letter-spacing: 0.05em;">
-      <div style="margin-bottom: 10px;">PIXELART CAM</div>
-      <div style="font-size: 10px; color: #555;">tap to start</div>
+
+  <!-- Boot screen - must tap to initialize plugin -->
+  <div id="boot-screen">
+    <div class="boot-text">
+      <div class="boot-title">PIXELART CAM</div>
+      <div class="boot-subtitle">tap to start</div>
     </div>
+    <button id="boot-button">START</button>
   </div>
 
-
   <!-- Camera and preview images -->
-  <video id="video" autoplay playsinline muted></video>
+  <video id="video" autoplay playsinline muted style="display: none;"></video>
   <img   id="preview" alt="captured">
 
   <!-- Current style name overlay at top -->
@@ -205,18 +236,137 @@
   <!-- Bottom bar: status + scroll hints + reset -->
   <div id="bar">
     <span id="arr-up">▲</span>
-    <span id="status">▲▼ to change style</span>
+    <span id="status">loading…</span>
     <span id="arr-down">▼</span>
     <button id="btn-reset">↺ retake</button>
   </div>
 
 </div>
 <script>
-  // ─── R1 detection ─────────────────────────────────────────────────────────
-  const isR1 = typeof PluginMessageHandler !== 'undefined';
+  // ─── Hardware Handler Class ───────────────────────────────────────────────
+  class HardwareHandler {
+    constructor() {
+      this.sideButtonEnabled = true;
+      this.scrollWheelEnabled = true;
+      this.eventListeners = new Map();
+    }
+
+    init(options = {}) {
+      this.sideButtonEnabled = options.sideButtonEnabled ?? true;
+      this.scrollWheelEnabled = options.scrollWheelEnabled ?? true;
+      if (this.sideButtonEnabled) this.setupSideButtonListener();
+      if (this.scrollWheelEnabled) this.setupScrollWheelListener();
+      if (options.keyboardFallback !== false) this.setupKeyboardFallback();
+    }
+
+    setupSideButtonListener() {
+      window.addEventListener('sideClick', e => {
+        if (this.sideButtonEnabled) this.handleSideButtonClick(e);
+      });
+    }
+
+    setupScrollWheelListener() {
+      window.addEventListener('scrollUp', e => {
+        if (this.scrollWheelEnabled) this.handleScrollWheel({ direction: 'up', event: e });
+      });
+      window.addEventListener('scrollDown', e => {
+        if (this.scrollWheelEnabled) this.handleScrollWheel({ direction: 'down', event: e });
+      });
+    }
+
+    setupKeyboardFallback() {
+      window.addEventListener('keydown', e => {
+        if (e.code === 'Space') {
+          e.preventDefault();
+          window.dispatchEvent(new CustomEvent('sideClick', { detail: { source: 'keyboard' } }));
+        }
+      });
+    }
+
+    handleSideButtonClick(e) {
+      (this.eventListeners.get('sideButton') || []).forEach(handler => handler(e));
+    }
+
+    handleScrollWheel(e) {
+      (this.eventListeners.get('scrollWheel') || []).forEach(handler => handler({ direction: e.direction, event: e.event }));
+    }
+
+    on(event, handler) {
+      if (!this.eventListeners.has(event)) this.eventListeners.set(event, []);
+      this.eventListeners.get(event).push(handler);
+    }
+  }
+
+  // ─── Plugin Bridge Class ──────────────────────────────────────────────────
+  class PluginBridge {
+    constructor() {
+      this.isFlutterAvailable = this.checkFlutterAvailability();
+      this.setupPluginMessageHandler();
+    }
+
+    checkFlutterAvailability() {
+      return typeof window !== 'undefined' && (
+        window.FlutterButtonHandler !== undefined ||
+        window.closeWebView !== undefined ||
+        window.PluginMessageHandler !== undefined ||
+        window.TouchEventHandler !== undefined
+      );
+    }
+
+    setupPluginMessageHandler() {
+      if (typeof window !== 'undefined' && !window.onPluginMessage) {
+        window.onPluginMessage = function(data) {
+          window.dispatchEvent(new CustomEvent('pluginMessage', { detail: data }));
+        };
+      }
+    }
+
+    sendPluginMessage(data) {
+      if (!window.PluginMessageHandler) {
+        console.warn('PluginMessageHandler not available');
+        return false;
+      }
+      try {
+        window.PluginMessageHandler.postMessage(JSON.stringify(data));
+        return true;
+      } catch (err) {
+        console.error('Failed to send plugin message:', err);
+        return false;
+      }
+    }
+
+    sendData(data) {
+      if (!window.FlutterButtonHandler) return false;
+      try {
+        window.FlutterButtonHandler.postMessage(JSON.stringify(data));
+        return true;
+      } catch (err) {
+        console.error('Failed to send data:', err);
+        return false;
+      }
+    }
+
+    onPluginMessage(callback) {
+      if (typeof window !== 'undefined') {
+        window.addEventListener('pluginMessage', e => callback(e.detail));
+      }
+    }
+  }
+
+  // ─── Initialize hardware and plugin handlers ──────────────────────────────
+  const hardware = new HardwareHandler();
+  const plugin = new PluginBridge();
+
+  hardware.init({
+    sideButtonEnabled: true,
+    scrollWheelEnabled: true,
+    keyboardFallback: true
+  });
+
+  console.log('Hardware handlers initialized');
+  console.log('Flutter available:', plugin.isFlutterAvailable);
 
   // ─── Style list ───────────────────────────────────────────────────────────
-  // Prompts sourced from the official Rabbit AI Camera Styles Creation
   const STYLES = [
     { name: 'SIMPSONS',    prompt: 'Take a picture in the style of a Simpsons cartoon.' },
     { name: 'GHIBLI',      prompt: 'Take a picture in the Studio Ghibli anime style — soft colors, whimsical atmosphere, and hand-drawn aesthetic.' },
@@ -238,15 +388,19 @@
   let styleIndex = 0;
 
   // ─── State ────────────────────────────────────────────────────────────────
-  // 'initializing' — camera is still loading
+  // 'boot'       — waiting for user to tap start
+  // 'initializing' — camera is loading
   // 'live'       — camera is showing, ready to shoot
   // 'sending'    — captured, sending to bridge, spinner up
   // 'processing' — bridge confirmed receipt, spinner still up
   // 'done'       — complete (or timed out), reset available
-  let state = 'initializing';
+  // 'error'      — error occurred
+  let state = 'boot';
 
   // ─── DOM refs ─────────────────────────────────────────────────────────────
   const appEl       = document.getElementById('app');
+  const bootScreen  = document.getElementById('boot-screen');
+  const bootButton  = document.getElementById('boot-button');
   const videoEl     = document.getElementById('video');
   const previewEl   = document.getElementById('preview');
   const overlayEl   = document.getElementById('overlay');
@@ -254,74 +408,37 @@
   const styleNameEl = document.getElementById('style-name');
   const statusEl    = document.getElementById('status');
   const btnReset    = document.getElementById('btn-reset');
-// ─── State ────────────────────────────────────────────────────────────────
-let state = 'boot';  // ← Start in 'boot', not 'initializing' or 'live'
 
-// ─── DOM refs ─────────────────────────────────────────────────────────────
-const appEl       = document.getElementById('app');
-const bootScreen  = document.getElementById('boot-screen');  // ← ADD THIS
-const videoEl     = document.getElementById('video');
-// ... rest of refs ...
-
-// ─── Boot handler ─────────────────────────────────────────────────────────
-async function bootApp() {
-  if (state !== 'boot') return;
-  
-  state = 'initializing';  // Lock out further boot attempts
-  try {
-    // Remove boot screen
-    if (bootScreen) bootScreen.remove();
-    
-    // Now initialize camera (plugin is now booted via user touch)
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { 
-        facingMode: 'environment',
-        width: { min: 640, ideal: 1280, max: 1920 },
-        height: { min: 480, ideal: 720, max: 1080 }
-      },
-    });
-    
-    videoEl.srcObject = stream;
-    
-    await new Promise(resolve => {
-      videoEl.onloadedmetadata = async () => {
-        try {
-          await videoEl.play();
-          setTimeout(resolve, 100);
-        } catch (err) {
-          console.error('Video play error:', err);
-          resolve();
-        }
-      };
-    });
-    
-    setState('live');
-    
-  } catch (err) {
-    console.error('Camera access error:', err);
-    setStatus('camera error: ' + err.message);
-    setState('error');
-  }
-}
-
-// ─── Boot triggers (multiple ways to start) ─────────────────────────────────
-document.addEventListener('touchstart', bootApp, { once: true });  // ← First touch boots
-document.addEventListener('click', bootApp, { once: true });       // ← Desktop fallback
-window.addEventListener('sideClick', bootApp, { once: true });     // ← R1 side button
   // ─── UI helpers ───────────────────────────────────────────────────────────
   function setState(s) {
     state = s;
+    console.log('State changed to:', s);
     switch (s) {
-      case 'live':
-        videoEl.style.display   = 'block';
+      case 'boot':
+        bootScreen.style.display = 'flex';
+        videoEl.style.display = 'none';
         previewEl.style.display = 'none';
         overlayEl.classList.remove('visible');
         btnReset.classList.remove('visible');
         appEl.style.borderColor = '#222';
-        setStatus('▲▼ change style · side btn shoot');
+        setStatus('tap to start');
+        break;
+      case 'initializing':
+        bootScreen.style.display = 'flex';
+        bootButton.disabled = true;
+        setStatus('loading camera…');
+        break;
+      case 'live':
+        bootScreen.style.display = 'none';
+        videoEl.style.display = 'block';
+        previewEl.style.display = 'none';
+        overlayEl.classList.remove('visible');
+        btnReset.classList.remove('visible');
+        appEl.style.borderColor = '#222';
+        setStatus('▲�� change style · side btn shoot');
         break;
       case 'sending':
-        videoEl.style.display   = 'none';
+        videoEl.style.display = 'none';
         previewEl.style.display = 'block';
         overlayEl.classList.add('visible');
         overlayText.textContent = 'Sending to r1…';
@@ -356,10 +473,120 @@ window.addEventListener('sideClick', bootApp, { once: true });     // ← R1 sid
     styleNameEl.textContent = STYLES[styleIndex].name;
   }
 
+  // ─── Enumerate cameras ────────────────────────────────────────────────────
+  async function enumerateDevices() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cameras = devices.filter(d => d.kind === 'videoinput');
+      console.log('Available cameras:', cameras.length);
+      return cameras;
+    } catch (err) {
+      console.error('Error enumerating cameras:', err);
+      return [];
+    }
+  }
+
+  function getCameraConstraints(cameraIndex = 0, availableCameras = []) {
+    return {
+      video: {
+        ...(availableCameras.length > 0 ? { deviceId: { exact: availableCameras[cameraIndex].deviceId } } : { facingMode: 'environment' }),
+        width: { min: 640, ideal: 1280, max: 1920 },
+        height: { min: 480, ideal: 720, max: 1080 },
+        aspectRatio: { ideal: 16 / 9 }
+      }
+    };
+  }
+
+  // ─── Initialize camera ────────────────────────────────────────────────────
+  let cameraStream = null;
+  let cameraIndex = 0;
+  let availableCameras = [];
+
+  async function initializeCamera() {
+    if (state !== 'initializing') return;
+
+    try {
+      console.log('Enumerating cameras...');
+      availableCameras = await enumerateDevices();
+      cameraIndex = 0;
+
+      console.log('Getting user media...');
+      const constraints = getCameraConstraints(cameraIndex, availableCameras);
+      cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+      videoEl.srcObject = cameraStream;
+
+      console.log('Waiting for video metadata...');
+      await new Promise(resolve => {
+        videoEl.onloadedmetadata = async () => {
+          try {
+            console.log('Playing video...');
+            await videoEl.play();
+            console.log('Video playing, waiting for stream to stabilize...');
+            setTimeout(resolve, 100);  // ← CRITICAL: Give stream time to stabilize
+          } catch (err) {
+            console.error('Video play error:', err);
+            resolve();
+          }
+        };
+      });
+
+      console.log('Camera initialized successfully');
+      updateStyleLabel();
+      setState('live');
+
+      // Setup plugin message handler AFTER camera is ready
+      plugin.onPluginMessage(data => {
+        console.log('Received plugin message:', data);
+        if (data && data.status === 'processing') {
+          setState('processing');
+        } else if (data && data.status === 'complete') {
+          setState('done');
+        } else if (data && data.error) {
+          setStatus('error: ' + data.error);
+          setState('error');
+        }
+      });
+
+      plugin.isFlutterAvailable && plugin.sendData({
+        status: 'camera_ready',
+        availableCameras: availableCameras.length,
+        timestamp: Date.now()
+      });
+
+    } catch (err) {
+      console.error('Camera access error:', err);
+      setStatus('camera error: ' + err.message);
+      appEl.style.borderColor = '#662222';
+      setState('error');
+      plugin.isFlutterAvailable && plugin.sendData({
+        status: 'camera_error',
+        error: err.message,
+        timestamp: Date.now()
+      });
+    }
+  }
+
+  // ─── Boot app (triggered by user tap) ─────────────────────────────────────
+  async function bootApp() {
+    if (state !== 'boot') return;
+    setState('initializing');
+    await initializeCamera();
+  }
+
   // ─── Capture & send ───────────────────────────────────────────────────────
   function shoot() {
-    if (state !== 'live') return;
+    if (state !== 'live') {
+      console.log('Cannot shoot in state:', state);
+      return;
+    }
 
+    if (!cameraStream || !videoEl.videoWidth) {
+      console.log('Camera stream not ready');
+      setStatus('camera not ready');
+      return;
+    }
+
+    console.log('Shooting...');
     // Capture full resolution frame
     const canvas = document.createElement('canvas');
     canvas.width  = videoEl.videoWidth  || 640;
@@ -374,27 +601,23 @@ window.addEventListener('sideClick', bootApp, { once: true });     // ← R1 sid
 
     const style = STYLES[styleIndex];
 
-    // Register response handler BEFORE sending.
-    // The bridge calls window.onPluginMessage(data) where data.status is:
-    //   "processing" — r1 has received and started generating
-    //   "complete"   — may or may not fire back into WebView
-    //                  (the generated image goes to r1 OS gallery, not here)
-    // We set a fallback timeout in case "complete" never fires.
+    // Register response handler BEFORE sending
+    let fallbackTimer = null;
     window.onPluginMessage = function(data) {
+      console.log('onPluginMessage received:', data);
       if (data && data.status === 'processing') {
         setState('processing');
       } else if (data && data.status === 'complete') {
-        clearTimeout(fallbackTimer);
+        if (fallbackTimer) clearTimeout(fallbackTimer);
         setState('done');
       } else if (data && data.error) {
-        clearTimeout(fallbackTimer);
+        if (fallbackTimer) clearTimeout(fallbackTimer);
         setStatus('error: ' + data.error);
         setState('error');
       }
     };
 
-    // Also listen via CustomEvent in case bridge uses that path
-    // (the official Rabbit SDK wrapper dispatches pluginMessage CustomEvents)
+    // Also listen via CustomEvent
     function onCustomEvent(e) {
       window.onPluginMessage && window.onPluginMessage(e.detail);
       window.removeEventListener('pluginMessage', onCustomEvent);
@@ -402,33 +625,34 @@ window.addEventListener('sideClick', bootApp, { once: true });     // ← R1 sid
     window.addEventListener('pluginMessage', onCustomEvent);
 
     // Send to bridge
-    if (isR1) {
-      PluginMessageHandler.postMessage(JSON.stringify({
-        message:     style.prompt,
-        pluginId:    'com.r1.pixelart',
+    if (plugin.isFlutterAvailable) {
+      console.log('Sending to plugin bridge...');
+      plugin.sendPluginMessage({
+        message: style.prompt,
+        pluginId: 'com.r1.pixelart',
         imageBase64: dataUri
-      }));
+      });
     } else {
       // Desktop simulation
+      console.log('Desktop mode: simulating plugin response');
       setTimeout(() => { window.onPluginMessage({ status: 'processing' }); }, 600);
       setTimeout(() => { window.onPluginMessage({ status: 'complete' }); }, 3000);
     }
 
-    // Fallback: if "complete" never fires (likely — it goes to OS, not WebView),
-    // transition to "done" state after a reasonable wait so the user isn't stuck.
-    // Based on the official app behavior: they just show "Image sent!" and never
-    // explicitly reset — so a generous timeout is the right UX here.
-    const fallbackTimer = setTimeout(() => {
+    // Fallback timeout
+    fallbackTimer = setTimeout(() => {
       if (state === 'sending' || state === 'processing') {
+        console.log('Fallback timeout reached, marking as done');
         setState('done');
         setStatus('sent · result in r1 gallery');
       }
-    }, 15000); // 15 seconds — generous for slow connections
+    }, 15000);
   }
 
   // ─── Reset to live camera ─────────────────────────────────────────────────
   function reset() {
-    window.onPluginMessage = null; // clear handler
+    console.log('Resetting to live camera');
+    window.onPluginMessage = null;
     setState('live');
   }
 
@@ -437,84 +661,73 @@ window.addEventListener('sideClick', bootApp, { once: true });     // ← R1 sid
     if (state !== 'live') return;
     styleIndex = (styleIndex + 1) % STYLES.length;
     updateStyleLabel();
+    setStatus(`${STYLES[styleIndex].name} · side btn to shoot`);
   }
 
   function prevStyle() {
     if (state !== 'live') return;
     styleIndex = (styleIndex - 1 + STYLES.length) % STYLES.length;
     updateStyleLabel();
+    setStatus(`${STYLES[styleIndex].name} · side btn to shoot`);
   }
-// ─── Init camera ──────────────────────────────────────────────────────────
-  async function init() {
-  updateStyleLabel();
-  try {
-    // Enumerate cameras first
-    try {
-      await navigator.mediaDevices.enumerateDevices();
-    } catch (err) {
-      console.log('Camera enumeration not available');
-    }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { 
-        facingMode: 'environment',
-        width: { min: 640, ideal: 1280, max: 1920 },
-        height: { min: 480, ideal: 720, max: 1080 },
-        aspectRatio: { ideal: 16 / 9 }
-      },
-    });
-    
-    videoEl.srcObject = stream;
-    
-    // CRITICAL: Wait for metadata AND explicitly play
-    await new Promise(resolve => {
-      videoEl.onloadedmetadata = async () => {
-        try {
-          await videoEl.play();
-          setTimeout(resolve, 100);  // ← Give it time to truly start
-        } catch (err) {
-          console.error('Video play error:', err);
-          resolve();
-        }
-      };
-    });
-    
-    // NOW set to live after everything is ready
-    setState('live');
-    setStatus('ready to shoot');
-    
-  } catch (err) {
-    console.error('Camera access error:', err);
-    setStatus('camera error: ' + err.message);
-    appEl.style.borderColor = '#662222';
-    setState('error');
-  }
-}
-  // ─── Hardware events ──────────────────────────────────────────────────────
-  window.addEventListener('sideClick',      shoot);
-  window.addEventListener('longPressStart', shoot);
-  window.addEventListener('scrollDown',     nextStyle);
-  window.addEventListener('scrollUp',       prevStyle);
+  // ─── Hardware event handlers ──────────────────────────────────────────────
+  hardware.on('sideButton', () => {
+    console.log('Side button pressed, state:', state);
+    if (state === 'boot') {
+      bootApp();
+    } else if (state === 'live') {
+      shoot();
+    } else if (previewEl.style.display === 'block') {
+      reset();
+    }
+  });
+
+  hardware.on('scrollWheel', e => {
+    console.log('Scroll wheel:', e.direction, 'state:', state);
+    if (state !== 'live') return;
+    if (e.direction === 'up') {
+      prevStyle();
+    } else if (e.direction === 'down') {
+      nextStyle();
+    }
+  });
 
   // ─── Touch events ─────────────────────────────────────────────────────────
   document.body.addEventListener('touchstart', e => {
     e.preventDefault();
     const t = e.target;
-    if (t === videoEl || t === previewEl) shoot();
-    if (t.id === 'btn-reset' || t.closest('#btn-reset')) reset();
-    if (t.id === 'arr-up')   prevStyle();
-    if (t.id === 'arr-down') nextStyle();
+    console.log('Touch on:', t.id || t.tagName);
+
+    if (t.id === 'boot-button' || t.closest('#boot-button')) {
+      bootApp();
+    } else if (t === videoEl && state === 'live') {
+      shoot();
+    } else if (t === previewEl) {
+      reset();
+    } else if (t.id === 'btn-reset' || t.closest('#btn-reset')) {
+      reset();
+    } else if (t.id === 'arr-up') {
+      prevStyle();
+    } else if (t.id === 'arr-down') {
+      nextStyle();
+    }
   }, { passive: false });
 
-  // Desktop click fallbacks
+  // ─── Click fallbacks for desktop ──────────────────────────────────────────
+  bootButton.addEventListener('click', bootApp);
   videoEl.addEventListener('click', shoot);
   btnReset.addEventListener('click', reset);
   document.getElementById('arr-up').addEventListener('click', prevStyle);
   document.getElementById('arr-down').addEventListener('click', nextStyle);
 
-  
+  // ─── Initialize UI on load ────────────────────────────────────────────────
+  window.addEventListener('load', () => {
+    console.log('Page loaded, app ready for boot');
+    setState('boot');
+  });
 
-  //init();
+  console.log('Pixelart Cam app script loaded');
 </script>
 </body>
 </html>
