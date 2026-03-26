@@ -367,7 +367,23 @@
     styleIndex = (styleIndex - 1 + STYLES.length) % STYLES.length;
     updateStyleLabel();
   }
-
+// ─── Init camera ──────────────────────────────────────────────────────────
+  async function init() {
+    updateStyleLabel();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false
+      });
+      videoEl.srcObject = stream;
+      await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
+      await videoEl.play();
+      setState('live');
+    } catch (err) {
+      setStatus('camera error: ' + err.message);
+      appEl.style.borderColor = '#662222';
+    }
+  }
   // ─── Hardware events ──────────────────────────────────────────────────────
   window.addEventListener('sideClick',      shoot);
   window.addEventListener('longPressStart', shoot);
@@ -390,23 +406,7 @@
   document.getElementById('arr-up').addEventListener('click', prevStyle);
   document.getElementById('arr-down').addEventListener('click', nextStyle);
 
-  // ─── Init camera ──────────────────────────────────────────────────────────
-  async function init() {
-    updateStyleLabel();
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false
-      });
-      videoEl.srcObject = stream;
-      await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
-      await videoEl.play();
-      setState('live');
-    } catch (err) {
-      setStatus('camera error: ' + err.message);
-      appEl.style.borderColor = '#662222';
-    }
-  }
+  
 
   init();
 </script>
