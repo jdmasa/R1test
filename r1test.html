@@ -1,253 +1,341 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Voice Assistant</title>
+  <title>Simpsonizador</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
     body {
       width: 240px;
       height: 282px;
       overflow: hidden;
-      background: #0a0a0a;
+      background: #1a0a2e;
       color: #fff;
       font-family: monospace;
       font-size: 11px;
     }
+
     #app {
       width: 240px;
       height: 282px;
+      border: 4px solid #FFD700;
       display: flex;
       flex-direction: column;
       align-items: center;
+      position: relative;
     }
 
-    /* ── PTT ring ── */
-    #ptt-wrap {
-      margin-top: 16px;
+    /* Header */
+    #header {
+      width: 100%;
+      background: #FFD700;
+      color: #1a0a2e;
+      text-align: center;
+      font-size: 13px;
+      font-weight: bold;
+      padding: 4px 0;
+      letter-spacing: 1px;
+      flex-shrink: 0;
+    }
+
+    /* Camera preview */
+    #video {
+      width: 228px;
+      height: 160px;
+      object-fit: cover;
+      background: #000;
+      display: block;
+      flex-shrink: 0;
+    }
+
+    /* Status area */
+    #status {
+      width: 100%;
+      text-align: center;
+      font-size: 10px;
+      padding: 3px 4px;
+      min-height: 20px;
+      color: #FFD700;
+      flex-shrink: 0;
+    }
+
+    /* Buttons row */
+    #controls {
+      display: flex;
+      flex-direction: row;
+      gap: 6px;
+      padding: 4px 6px;
+      width: 100%;
+      flex-shrink: 0;
+    }
+
+    .btn {
+      flex: 1;
+      height: 48px;
+      border: none;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: bold;
+      cursor: pointer;
+      font-family: monospace;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: 6px;
-    }
-    #ptt-ring {
-      width: 80px;
-      height: 80px;
-      border-radius: 50%;
-      border: 3px solid #333;
-      display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 30px;
-      transition: border-color 0.15s, box-shadow 0.15s;
-      user-select: none;
-    }
-    #ptt-ring.recording { border-color: #f44; box-shadow: 0 0 18px #f446; }
-    #ptt-ring.thinking  { border-color: #4af; box-shadow: 0 0 18px #4af6; }
-    #ptt-ring.ready     { border-color: #4f4; box-shadow: 0 0 10px #4f42; }
-
-    #state-label {
-      font-size: 9px;
-      color: #666;
-      letter-spacing: 1px;
-      text-transform: uppercase;
+      gap: 2px;
     }
 
-    /* ── You said ── */
-    #you-said {
-      margin-top: 8px;
-      width: 220px;
-      padding: 4px 6px;
-      background: #111;
-      border: 1px solid #222;
-      border-radius: 3px;
-      color: #ff0;
-      font-size: 10px;
-      min-height: 22px;
-      line-height: 1.4;
-      word-break: break-word;
+    #btnCapture {
+      background: #FFD700;
+      color: #1a0a2e;
     }
 
-    /* ── Response ── */
-    #response {
-      margin-top: 5px;
-      width: 220px;
-      flex: 1;
-      padding: 5px 6px;
-      overflow-y: auto;
-      background: #000;
-      border: 1px solid #222;
-      border-radius: 3px;
-      color: #ddd;
+    #btnCapture:active { opacity: 0.75; }
+    #btnCapture:disabled {
+      background: #555;
+      color: #999;
+    }
+
+    #btnSave {
+      background: #00aa44;
+      color: #fff;
+    }
+
+    #btnSave:active { opacity: 0.75; }
+    #btnSave:disabled {
+      background: #555;
+      color: #999;
+    }
+
+    .btn-icon { font-size: 18px; }
+
+    /* Overlay spinner shown while processing */
+    #overlay {
+      display: none;
+      position: absolute;
+      top: 26px; /* below header */
+      left: 0;
+      width: 228px;
+      height: 160px;
+      background: rgba(0,0,0,0.75);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    #overlay.visible { display: flex; }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid #333;
+      border-top-color: #FFD700;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #overlayText {
+      color: #FFD700;
       font-size: 11px;
-      line-height: 1.45;
-      word-break: break-word;
+      text-align: center;
+      padding: 0 10px;
     }
-
-    /* ── Hold button ── */
-    #hold-btn {
-      width: 100%;
-      height: 30px;
-      background: #111;
-      color: #666;
-      border: none;
-      border-top: 1px solid #333;
-      font-family: monospace;
-      font-size: 10px;
-      cursor: pointer;
-      flex-shrink: 0;
-      letter-spacing: 1px;
-      margin-top: 5px;
-    }
-    #hold-btn.recording { background: #1a0000; color: #f44; }
-    #hold-btn.thinking  { color: #4af; }
   </style>
 </head>
 <body>
 <div id="app">
-  <div id="ptt-wrap">
-    <div id="ptt-ring">🎙</div>
-    <div id="state-label">initializing...</div>
+
+  <div id="header">🍩 SIMPSONIZADOR</div>
+
+  <!-- Live camera preview -->
+  <video id="video" autoplay playsinline muted></video>
+
+  <!-- Processing overlay (shown on top of video area) -->
+  <div id="overlay">
+    <div class="spinner"></div>
+    <div id="overlayText">Transformando…</div>
   </div>
-  <div id="you-said">—</div>
-  <div id="response">Hold PTT or button to speak.</div>
-  <button id="hold-btn">[ HOLD TO TALK ]</button>
+
+  <div id="status">Iniciando cámara…</div>
+
+  <div id="controls">
+    <button id="btnCapture" class="btn" disabled>
+      <span class="btn-icon">📸</span>
+      <span>Capturar</span>
+    </button>
+    <button id="btnSave" class="btn" disabled>
+      <span class="btn-icon">📓</span>
+      <span>Guardar</span>
+    </button>
+  </div>
+
 </div>
 
 <script>
-  const ring      = document.getElementById('ptt-ring');
-  const label     = document.getElementById('state-label');
-  const youSaid   = document.getElementById('you-said');
-  const response  = document.getElementById('response');
-  const holdBtn   = document.getElementById('hold-btn');
+  // ── Guards ────────────────────────────────────────────────────────────────
+  const isR1 = typeof PluginMessageHandler !== 'undefined';
 
-  const WHISPER_URL = 'https://masatrad-whisper.hf.space/asr?output=txt&encode=true';
+  // ── Elements ──────────────────────────────────────────────────────────────
+  const video      = document.getElementById('video');
+  const overlay    = document.getElementById('overlay');
+  const overlayTxt = document.getElementById('overlayText');
+  const statusEl   = document.getElementById('status');
+  const btnCapture = document.getElementById('btnCapture');
+  const btnSave    = document.getElementById('btnSave');
+  const appEl      = document.getElementById('app');
 
-  let micStream  = null;
-  let recorder   = null;
-  let chunks     = [];
-  let recording  = false;
-  let busy       = false;
+  // ── State ─────────────────────────────────────────────────────────────────
+  let cameraStream     = null;
+  let lastCapturedUri  = null;  // base64 JPEG data URI of captured frame
+  let transformDone    = false; // true once pixelart bridge says 'complete'
 
-  // ── State helpers ──────────────────────────────────────────────
-  function setState(s) {
-    ring.className  = s;
-    holdBtn.className = s;
-    const states = {
-      idle:      { icon: '🎙', lbl: 'hold PTT to speak',  btn: '[ HOLD TO TALK ]' },
-      recording: { icon: '🔴', lbl: 'listening...',        btn: '[ RELEASE TO SEND ]' },
-      thinking:  { icon: '💭', lbl: 'thinking...',         btn: '[ ... ]' },
-      ready:     { icon: '🎙', lbl: 'hold PTT to speak',   btn: '[ HOLD TO TALK ]' },
-    };
-    const s2 = states[s] || states.idle;
-    ring.textContent  = s2.icon;
-    label.textContent = s2.lbl;
-    holdBtn.textContent = s2.btn;
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function setStatus(msg) { statusEl.textContent = msg; }
+
+  function setBorderColor(hex) { appEl.style.borderColor = hex; }
+
+  function showOverlay(msg) {
+    overlayTxt.textContent = msg;
+    overlay.classList.add('visible');
   }
 
-  // ── Init mic ───────────────────────────────────────────────────
-  async function initMic() {
-    setState('idle');
-    label.textContent = 'Press to start...';
+  function hideOverlay() { overlay.classList.remove('visible'); }
+
+  // ── Camera init ───────────────────────────────────────────────────────────
+  async function startCamera() {
     try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      setState('ready');
-    } catch(e) {
-      label.textContent = 'mic error: ' + e.message;
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false
+      });
+      video.srcObject = cameraStream;
+      await new Promise(res => { video.onloadedmetadata = res; });
+      video.play();
+      setStatus('Listo. Pulsa Capturar.');
+      setBorderColor('#FFD700');
+      btnCapture.disabled = false;
+    } catch (err) {
+      setStatus('Error cámara: ' + err.message);
+      setBorderColor('#ff3333');
     }
   }
 
-  // ── Start recording ────────────────────────────────────────────
-  function startRecording() {
-    if (recording || busy || !micStream) return;
-    recording = true;
-    chunks    = [];
-    setState('recording');
-
-    recorder = new MediaRecorder(micStream, { mimeType: 'audio/webm;codecs=opus' });
-    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-    recorder.onstop = onStop;
-    recorder.start(100);
+  // ── Capture frame from video ──────────────────────────────────────────────
+  function captureFrame() {
+    const canvas = document.createElement('canvas');
+    // Use full video resolution for best pixelart output
+    canvas.width  = video.videoWidth  || 320;
+    canvas.height = video.videoHeight || 240;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    return canvas.toDataURL('image/jpeg', 0.8);
   }
 
-  // ── Stop recording ─────────────────────────────────────────────
-  function stopRecording() {
-    if (!recording || !recorder) return;
-    recording = false;
-    recorder.stop();
-    setState('thinking');
-    busy = true;
-  }
-
-  // ── On stop: send to Whisper ───────────────────────────────────
-  async function onStop() {
-    const blob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
-
-    try {
-      label.textContent = 'transcribing...';
-      const formData = new FormData();
-      formData.append('audio_file', blob, 'audio.webm');
-
-      const res = await fetch(WHISPER_URL, { method: 'POST', body: formData });
-      if (!res.ok) throw new Error('Whisper HTTP ' + res.status);
-
-      const transcript = (await res.text()).trim();
-      if (!transcript) throw new Error('empty transcript');
-
-      youSaid.textContent = transcript;
-      sendToLLM(transcript);
-
-    } catch(e) {
-      label.textContent  = 'whisper error: ' + e.message;
-      response.textContent = 'Transcription failed: ' + e.message;
-      busy = false;
-      setState('ready');
+  // ── Send to com.r1.pixelart bridge ────────────────────────────────────────
+  function simpsonize(imageDataUri) {
+    if (!isR1) {
+      // Desktop preview: fake the transformation flow
+      setTimeout(() => {
+        hideOverlay();
+        setStatus('✅ Transformación OK (demo)');
+        setBorderColor('#00aa44');
+        btnSave.disabled = false;
+        transformDone = true;
+      }, 2000);
+      return;
     }
-  }
 
-  // ── Send transcript to r1 LLM ──────────────────────────────────
-  function sendToLLM(text) {
-    label.textContent = 'sending to LLM...';
-
+    // Register response handler BEFORE sending
     window.onPluginMessage = function(data) {
-      const reply = (data && data.message) ? data.message
-                  : (data && data.data)    ? data.data
-                  : JSON.stringify(data);
-      response.textContent = reply;
-      busy = false;
-      setState('ready');
+      if (data.status === 'processing') {
+        overlayTxt.textContent = 'IA trabajando…';
+        setBorderColor('#ff8800');
+
+      } else if (data.status === 'complete') {
+        hideOverlay();
+        setStatus('✅ ¡Simpsonizado! Guarda en Journal.');
+        setBorderColor('#00aa44');
+        btnCapture.disabled = false;
+        btnSave.disabled = false;
+        transformDone = true;
+
+      } else if (data.error) {
+        hideOverlay();
+        setStatus('Error: ' + (data.error || 'desconocido'));
+        setBorderColor('#ff3333');
+        btnCapture.disabled = false;
+      } else {
+        // Unexpected — log raw for debug
+        setStatus(JSON.stringify(data).substring(0, 60));
+      }
     };
 
-    try {
-      PluginMessageHandler.postMessage(JSON.stringify({
-        message: text,
-        useLLM: true,
-        wantsR1Response: false
-      }));
-    } catch(e) {
-      response.textContent = 'LLM error: ' + e.message;
-      busy = false;
-      setState('ready');
-    }
+    PluginMessageHandler.postMessage(JSON.stringify({
+      message:     'Take a picture in the style of a Simpsons cartoon.',
+      pluginId:    'com.r1.pixelart',
+      imageBase64: imageDataUri
+    }));
   }
 
-  // ── Hardware PTT ───────────────────────────────────────────────
-  window.addEventListener('longPressStart', startRecording);
-  window.addEventListener('longPressEnd',   stopRecording);
-  window.addEventListener('sideClick', () => {
-    if (!recording && !busy) startRecording();
-    else if (recording)      stopRecording();
+  // ── Save to Journal ───────────────────────────────────────────────────────
+  function saveToJournal() {
+    if (!isR1) {
+      setStatus('Journal: solo disponible en r1.');
+      return;
+    }
+    if (!lastCapturedUri) {
+      setStatus('Primero captura una foto.');
+      return;
+    }
+
+    // wantsJournalEntry saves the LLM response to the r1 Journal.
+    // We embed the captured image in the message so the journal entry
+    // includes a description + the image reference.
+    window.onPluginMessage = function(data) {
+      setStatus('📓 Guardado en Journal.');
+      setBorderColor('#FFD700');
+      btnSave.disabled = true;
+    };
+
+    PluginMessageHandler.postMessage(JSON.stringify({
+      message: 'Esta foto fue transformada al estilo de los Simpsons.\nIMAGE_DATA_URI: ' + lastCapturedUri,
+      useLLM:           true,
+      wantsR1Response:  false,
+      wantsJournalEntry: true
+    }));
+  }
+
+  // ── Button events (addEventListener — never inline onclick) ───────────────
+  btnCapture.addEventListener('click', function() {
+    if (!cameraStream) { setStatus('Cámara no lista.'); return; }
+
+    transformDone = false;
+    btnSave.disabled = true;
+    btnCapture.disabled = true;
+
+    lastCapturedUri = captureFrame();
+    showOverlay('Enviando a IA…');
+    setStatus('Procesando…');
+    setBorderColor('#ff8800');
+
+    simpsonize(lastCapturedUri);
   });
 
-  // ── On-screen button ───────────────────────────────────────────
-  holdBtn.addEventListener('mousedown',  startRecording);
-  holdBtn.addEventListener('mouseup',    stopRecording);
-  holdBtn.addEventListener('touchstart', e => { e.preventDefault(); startRecording(); });
-  holdBtn.addEventListener('touchend',   e => { e.preventDefault(); stopRecording(); });
+  btnSave.addEventListener('click', function() {
+    saveToJournal();
+  });
 
-  // ── Init ───────────────────────────────────────────────────────
-  initMic();
+  // ── Hardware button: PTT side click also triggers capture ─────────────────
+  window.addEventListener('sideClick', function() {
+    if (!btnCapture.disabled) btnCapture.click();
+  });
+
+  // ── Boot ──────────────────────────────────────────────────────────────────
+  startCamera();
 </script>
 </body>
 </html>
