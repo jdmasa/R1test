@@ -11,6 +11,16 @@
   - status:"complete" may or may not fire back into the WebView
   - This Creation shows the captured freeze-frame as a "before" preview,
     a spinner while processing, and a reset button. That is the full loop.
+
+  FIX (v2):
+  - Added `cameraReady` flag so that shoot() is a no-op until getUserMedia
+    has resolved and the video stream is live. This prevents longPressStart
+    (which rabbitOS fires on plugin load, before init() finishes) from
+    capturing a blank frame and locking the UI in 'sending' state.
+  - Removed window.addEventListener('longPressStart', shoot) — longPressStart
+    is a startup event on rabbitOS, not a reliable shoot trigger.
+  - init() now only calls setState('live') if state hasn't been changed by
+    something else in the meantime.
 -->
 <html lang="en">
 <head>
@@ -38,40 +48,6 @@
       flex-direction: column;
       position: relative;
       transition: border-color 0.2s ease;
-    }
-
-    /* ── Boot screen ── */
-    #boot-screen {
-      position: absolute;
-      top: 0; left: 0;
-      width: 240px;
-      height: 282px;
-      background: #000;
-      border: 4px solid #222;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      z-index: 100;
-      gap: 20px;
-    }
-
-    #boot-screen .boot-text {
-      text-align: center;
-      color: #888;
-      font-family: monospace;
-    }
-
-    #boot-screen .boot-title {
-      margin-bottom: 10px;
-      font-size: 12px;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-    }
-
-    #boot-screen .boot-subtitle {
-      font-size: 10px;
-      color: #555;
     }
 
     /* ── Camera / preview layer ── */
@@ -198,16 +174,8 @@
 <body>
 <div id="app">
 
-  <!-- Boot screen - side button will boot -->
-  <div id="boot-screen">
-    <div class="boot-text">
-      <div class="boot-title">PIXELART CAM</div>
-      <div class="boot-subtitle">press side button</div>
-    </div>
-  </div>
-
   <!-- Camera and preview images -->
-  <video id="video" autoplay playsinline muted style="display: none;"></video>
+  <video id="video" autoplay playsinline muted></video>
   <img   id="preview" alt="captured">
 
   <!-- Current style name overlay at top -->
@@ -224,24 +192,15 @@
   <!-- Bottom bar: status + scroll hints + reset -->
   <div id="bar">
     <span id="arr-up">▲</span>
-    <span id="status">loading…</span>
+    <span id="status">initializing…</span>
     <span id="arr-down">▼</span>
     <button id="btn-reset">↺ retake</button>
   </div>
 
 </div>
 <script>
-  // ─── Plugin Bridge Setup ──────────────────────────────────────────────────
-  // Setup window.onPluginMessage FIRST - before anything else
-  if (!window.onPluginMessage) {
-    window.onPluginMessage = function(data) {
-      console.log('onPluginMessage called:', data);
-      window.dispatchEvent(new CustomEvent('pluginMessage', { detail: data }));
-    };
-  }
-
+  // ─── R1 detection ─────────────────────────────────────────────────────────
   const isR1 = typeof PluginMessageHandler !== 'undefined';
-  console.log('Is R1:', isR1);
 
   // ─── Style list ───────────────────────────────────────────────────────────
   const STYLES = [
@@ -265,11 +224,20 @@
   let styleIndex = 0;
 
   // ─── State ────────────────────────────────────────────────────────────────
-  let state = 'boot';
+  // 'live'       — camera is showing, ready to shoot
+  // 'sending'    — captured, sending to bridge, spinner up
+  // 'processing' — bridge confirmed receipt, spinner still up
+  // 'done'       — complete (or timed out), reset available
+  // 'error'      — something went wrong, reset available
+  let state = 'live';
+
+  // FIX: camera readiness flag — shoot() is a no-op until this is true.
+  // Prevents longPressStart (fired by rabbitOS on plugin load) from
+  // capturing a blank frame before getUserMedia has resolved.
+  let cameraReady = false;
 
   // ─── DOM refs ─────────────────────────────────────────────────────────────
   const appEl       = document.getElementById('app');
-  const bootScreen  = document.getElementById('boot-screen');
   const videoEl     = document.getElementById('video');
   const previewEl   = document.getElementById('preview');
   const overlayEl   = document.getElementById('overlay');
@@ -281,25 +249,9 @@
   // ─── UI helpers ───────────────────────────────────────────────────────────
   function setState(s) {
     state = s;
-    console.log('setState:', s);
     switch (s) {
-      case 'boot':
-        bootScreen.style.display = 'flex';
-        videoEl.style.display = 'none';
-        previewEl.style.display = 'none';
-        overlayEl.classList.remove('visible');
-        btnReset.classList.remove('visible');
-        appEl.style.borderColor = '#222';
-        setStatus('press side button');
-        break;
-      case 'initializing':
-        bootScreen.style.display = 'flex';
-        setStatus('loading camera…');
-        appEl.style.borderColor = '#334499';
-        break;
       case 'live':
-        bootScreen.style.display = 'none';
-        videoEl.style.display = 'block';
+        videoEl.style.display   = 'block';
         previewEl.style.display = 'none';
         overlayEl.classList.remove('visible');
         btnReset.classList.remove('visible');
@@ -307,7 +259,7 @@
         setStatus('▲▼ change style · side btn shoot');
         break;
       case 'sending':
-        videoEl.style.display = 'none';
+        videoEl.style.display   = 'none';
         previewEl.style.display = 'block';
         overlayEl.classList.add('visible');
         overlayText.textContent = 'Sending to r1…';
@@ -342,115 +294,12 @@
     styleNameEl.textContent = STYLES[styleIndex].name;
   }
 
-  // ─── Initialize camera ────────────────────────────────────────────────────
-  let cameraStream = null;
-  let cameraIndex = 0;
-  let availableCameras = [];
-  let isInitializing = false;
-
-  async function enumerateDevices() {
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const cameras = devices.filter(d => d.kind === 'videoinput');
-      console.log('Available cameras:', cameras.length);
-      return cameras;
-    } catch (err) {
-      console.error('Error enumerating cameras:', err);
-      return [];
-    }
-  }
-
-  function getCameraConstraints(cameraIndex = 0, availableCameras = []) {
-    return {
-      video: {
-        ...(availableCameras.length > 0 ? { deviceId: { exact: availableCameras[cameraIndex].deviceId } } : { facingMode: 'environment' }),
-        width: { min: 640, ideal: 1280, max: 1920 },
-        height: { min: 480, ideal: 720, max: 1080 },
-        aspectRatio: { ideal: 16 / 9 }
-      }
-    };
-  }
-
-  async function initializeCamera() {
-    if (isInitializing || state !== 'boot') {
-      console.log('Cannot initialize: isInitializing=' + isInitializing + ', state=' + state);
-      return;
-    }
-
-    isInitializing = true;
-    setState('initializing');
-
-    try {
-      console.log('Step 1: Enumerating cameras...');
-      availableCameras = await enumerateDevices();
-      cameraIndex = 0;
-
-      console.log('Step 2: Getting user media with constraints...');
-      const constraints = getCameraConstraints(cameraIndex, availableCameras);
-      console.log('Constraints:', JSON.stringify(constraints));
-      
-      cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
-      console.log('Step 3: Stream acquired, setting srcObject...');
-      videoEl.srcObject = cameraStream;
-
-      console.log('Step 4: Waiting for metadata...');
-      await new Promise((resolve) => {
-        videoEl.onloadedmetadata = async () => {
-          console.log('Step 5: Metadata loaded, calling play()...');
-          try {
-            await videoEl.play();
-            console.log('Step 6: Video playing, stabilizing...');
-            setTimeout(() => {
-              console.log('Step 7: Stream stabilized');
-              resolve();
-            }, 150);
-          } catch (err) {
-            console.error('Play error:', err);
-            resolve();
-          }
-        };
-      });
-
-      console.log('Step 8: Camera ready!');
-      updateStyleLabel();
-      setState('live');
-
-      // Setup message handler after camera is ready
-      window.onPluginMessage = function(data) {
-        console.log('Plugin message received:', data);
-        if (data && data.status === 'processing') {
-          setState('processing');
-        } else if (data && data.status === 'complete') {
-          setState('done');
-        } else if (data && data.error) {
-          setStatus('error: ' + data.error);
-          setState('error');
-        }
-      };
-
-    } catch (err) {
-      console.error('Camera initialization error:', err);
-      setStatus('camera error: ' + err.message);
-      appEl.style.borderColor = '#662222';
-      setState('error');
-    } finally {
-      isInitializing = false;
-    }
-  }
-
   // ─── Capture & send ───────────────────────────────────────────────────────
   function shoot() {
-    if (state !== 'live') {
-      console.log('Cannot shoot in state:', state);
-      return;
-    }
+    // FIX: guard against premature fire (e.g. longPressStart on boot)
+    if (!cameraReady || state !== 'live') return;
 
-    if (!cameraStream || !videoEl.videoWidth) {
-      console.log('Camera not ready');
-      return;
-    }
-
-    console.log('Capturing photo...');
+    // Capture full resolution frame
     const canvas = document.createElement('canvas');
     canvas.width  = videoEl.videoWidth  || 640;
     canvas.height = videoEl.videoHeight || 480;
@@ -458,27 +307,33 @@
 
     const dataUri = canvas.toDataURL('image/jpeg', 0.8);
 
+    // Show freeze-frame as preview
     previewEl.src = dataUri;
     setState('sending');
 
     const style = STYLES[styleIndex];
 
-    // Register response handler
-    let fallbackTimer = null;
+    // Register response handler BEFORE sending.
+    // The bridge calls window.onPluginMessage(data) where data.status is:
+    //   "processing" — r1 has received and started generating
+    //   "complete"   — may or may not fire back into WebView
+    //                  (the generated image goes to r1 OS gallery, not here)
+    // We set a fallback timeout in case "complete" never fires.
     window.onPluginMessage = function(data) {
-      console.log('Response received:', data);
       if (data && data.status === 'processing') {
         setState('processing');
       } else if (data && data.status === 'complete') {
-        if (fallbackTimer) clearTimeout(fallbackTimer);
+        clearTimeout(fallbackTimer);
         setState('done');
       } else if (data && data.error) {
-        if (fallbackTimer) clearTimeout(fallbackTimer);
+        clearTimeout(fallbackTimer);
         setStatus('error: ' + data.error);
         setState('error');
       }
     };
 
+    // Also listen via CustomEvent in case bridge uses that path
+    // (the official Rabbit SDK wrapper dispatches pluginMessage CustomEvents)
     function onCustomEvent(e) {
       window.onPluginMessage && window.onPluginMessage(e.detail);
       window.removeEventListener('pluginMessage', onCustomEvent);
@@ -487,32 +342,30 @@
 
     // Send to bridge
     if (isR1) {
-      console.log('Sending to R1 bridge...');
       PluginMessageHandler.postMessage(JSON.stringify({
         message:     style.prompt,
         pluginId:    'com.r1.pixelart',
         imageBase64: dataUri
       }));
     } else {
-      console.log('Desktop mode: simulating response...');
+      // Desktop simulation
       setTimeout(() => { window.onPluginMessage({ status: 'processing' }); }, 600);
       setTimeout(() => { window.onPluginMessage({ status: 'complete' }); }, 3000);
     }
 
-    // Fallback timeout
-    fallbackTimer = setTimeout(() => {
+    // Fallback: if "complete" never fires (likely — it goes to OS, not WebView),
+    // transition to "done" state after a reasonable wait so the user isn't stuck.
+    const fallbackTimer = setTimeout(() => {
       if (state === 'sending' || state === 'processing') {
-        console.log('Fallback timeout triggered');
         setState('done');
         setStatus('sent · result in r1 gallery');
       }
-    }, 15000);
+    }, 15000); // 15 seconds — generous for slow connections
   }
 
-  // ─── Reset ────────────────────────────────────────────────────────────────
+  // ─── Reset to live camera ─────────────────────────────────────────────────
   function reset() {
-    console.log('Resetting...');
-    window.onPluginMessage = null;
+    window.onPluginMessage = null; // clear handler
     setState('live');
   }
 
@@ -521,79 +374,60 @@
     if (state !== 'live') return;
     styleIndex = (styleIndex + 1) % STYLES.length;
     updateStyleLabel();
-    setStatus(`${STYLES[styleIndex].name} · side btn to shoot`);
   }
 
   function prevStyle() {
     if (state !== 'live') return;
     styleIndex = (styleIndex - 1 + STYLES.length) % STYLES.length;
     updateStyleLabel();
-    setStatus(`${STYLES[styleIndex].name} · side btn to shoot`);
   }
 
-  // ─── Register global event listeners ───────────────────────────────────────
-  // These are registered EARLY and work throughout the app lifecycle
-  window.addEventListener('sideClick', () => {
-    console.log('sideClick event, state:', state);
-    if (state === 'boot') {
-      initializeCamera();
-    } else if (state === 'live') {
-      shoot();
-    } else if (previewEl.style.display === 'block') {
-      reset();
-    }
-  });
-
-  window.addEventListener('longPressStart', () => {
-    console.log('longPressStart event, state:', state);
-    if (state === 'boot') {
-      initializeCamera();
-    } else if (state === 'live') {
-      shoot();
-    }
-  });
-
-  window.addEventListener('scrollDown', () => {
-    console.log('scrollDown event');
-    nextStyle();
-  });
-
-  window.addEventListener('scrollUp', () => {
-    console.log('scrollUp event');
-    prevStyle();
-  });
+  // ─── Hardware events ──────────────────────────────────────────────────────
+  // FIX: longPressStart removed — rabbitOS fires it on plugin load (before
+  // the camera is ready), which would trigger shoot() on a blank stream.
+  // sideClick is the correct and reliable shoot trigger on the R1.
+  window.addEventListener('sideClick',  shoot);
+  window.addEventListener('scrollDown', nextStyle);
+  window.addEventListener('scrollUp',   prevStyle);
 
   // ─── Touch events ─────────────────────────────────────────────────────────
-  document.addEventListener('touchstart', e => {
+  document.body.addEventListener('touchstart', e => {
+    e.preventDefault();
     const t = e.target;
-    console.log('Touch on:', t.id || t.tagName);
-    
-    if (t === videoEl && state === 'live') {
-      shoot();
-    } else if (t === previewEl) {
-      reset();
-    } else if (t.id === 'btn-reset' || t.closest('#btn-reset')) {
-      reset();
-    } else if (t.id === 'arr-up') {
-      prevStyle();
-    } else if (t.id === 'arr-down') {
-      nextStyle();
-    }
+    if (t === videoEl || t === previewEl) shoot();
+    if (t.id === 'btn-reset' || t.closest('#btn-reset')) reset();
+    if (t.id === 'arr-up')   prevStyle();
+    if (t.id === 'arr-down') nextStyle();
   }, { passive: false });
 
-  // ─── Click fallbacks for desktop ──────────────────────────────────────────
+  // Desktop click fallbacks
   videoEl.addEventListener('click', shoot);
   btnReset.addEventListener('click', reset);
   document.getElementById('arr-up').addEventListener('click', prevStyle);
   document.getElementById('arr-down').addEventListener('click', nextStyle);
 
-  // ─── Initialize ────────────────────────────────────────────────────────────
-  window.addEventListener('load', () => {
-    console.log('Page loaded, initializing...');
-    setState('boot');
-  });
+  // ─── Init camera ──────────────────────────────────────────────────────────
+  async function init() {
+    updateStyleLabel();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false
+      });
+      videoEl.srcObject = stream;
+      await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
+      await videoEl.play();
+      // FIX: only transition to 'live' if nothing has taken over state,
+      // then mark camera as ready so shoot() can proceed.
+      cameraReady = true;
+      if (state === 'live') setState('live');
+    } catch (err) {
+      setStatus('camera error: ' + err.message);
+      appEl.style.borderColor = '#662222';
+    }
+  }
 
-  console.log('App script loaded and ready');
+  init();
 </script>
 </body>
 </html>
