@@ -96,7 +96,7 @@
       border: 3px solid #333;
       border-top-color: #6af;
       border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+      animation: spin 0.8s linear infe;
     }
 
     @keyframes spin {
@@ -372,17 +372,46 @@
   async function init() {
   updateStyleLabel();
   try {
+    // Enumerate cameras first
+    try {
+      await navigator.mediaDevices.enumerateDevices();
+    } catch (err) {
+      console.log('Camera enumeration not available');
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment' },
+      video: { 
+        facingMode: 'environment',
+        width: { min: 640, ideal: 1280, max: 1920 },
+        height: { min: 480, ideal: 720, max: 1080 },
+        aspectRatio: { ideal: 16 / 9 }
+      },
     });
+    
     videoEl.srcObject = stream;
-    await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
-    await videoEl.play();
-    setState('live');  // ← Only NOW set to 'live' after camera is ready
+    
+    // CRITICAL: Wait for metadata AND explicitly play
+    await new Promise(resolve => {
+      videoEl.onloadedmetadata = async () => {
+        try {
+          await videoEl.play();
+          setTimeout(resolve, 100);  // ← Give it time to truly start
+        } catch (err) {
+          console.error('Video play error:', err);
+          resolve();
+        }
+      };
+    });
+    
+    // NOW set to live after everything is ready
+    setState('live');
+    setStatus('ready to shoot');
+    
   } catch (err) {
+    console.error('Camera access error:', err);
     setStatus('camera error: ' + err.message);
     appEl.style.borderColor = '#662222';
-    setState('error');  // ← Also set state here on error
+    setState('error');
   }
 }
   // ─── Hardware events ──────────────────────────────────────────────────────
