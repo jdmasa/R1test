@@ -1,18 +1,22 @@
 <!DOCTYPE html>
 <!--
-  pixelart-test — Rabbit R1 Creation
-  Diagnostic tool for the com.r1.pixelart image generation bridge.
-  - Opens camera, captures on side-button press
-  - Sends to pixelart bridge with a fixed style prompt
-  - Logs EVERY raw field of every response so we can see what comes back
-  - Uses BOTH window.onPluginMessage and pluginMessage CustomEvent listener
-    to figure out which channel the pixelart bridge uses
+  pixelart-cam — Rabbit R1 Creation
+  Captures a photo, sends it to the r1 pixelart bridge for AI style transformation.
+
+  IMPORTANT — how this bridge works:
+  - You send: message (style prompt) + pluginId:"com.r1.pixelart" + imageBase64
+  - Bridge responds with status:"processing" back to window.onPluginMessage
+  - The GENERATED IMAGE is delivered by rabbitOS to its own image viewer/gallery
+    — it does NOT come back to this WebView as base64 or any other format
+  - status:"complete" may or may not fire back into the WebView
+  - This Creation shows the captured freeze-frame as a "before" preview,
+    a spinner while processing, and a reset button. That is the full loop.
 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Pixelart Test</title>
+  <title>Pixelart Cam</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -20,58 +24,96 @@
       width: 240px;
       height: 282px;
       overflow: hidden;
-      background: #0a0a0a;
-      color: #e0e0e0;
+      background: #000;
+      color: #fff;
       font-family: monospace;
-      font-size: 10px;
+      font-size: 11px;
     }
 
     #app {
       width: 240px;
       height: 282px;
-      border: 3px solid #222;
+      border: 4px solid #222;
       display: flex;
       flex-direction: column;
+      position: relative;
+      transition: border-color 0.2s ease;
     }
 
-    /* Live camera preview — small to leave room for log */
-    #video {
+    /* ── Camera / preview layer ── */
+    #video, #preview {
+      position: absolute;
+      top: 0; left: 0;
       width: 240px;
-      height: 120px;
+      height: 240px;
       object-fit: cover;
-      background: #111;
-      flex-shrink: 0;
-      display: block;
     }
 
-    /* Scrollable response log */
-    #log {
-      flex: 1;
-      overflow-y: auto;
-      overflow-x: hidden;
-      padding: 4px;
-      background: #0d0d0d;
-      border-top: 1px solid #222;
+    #preview {
+      display: none;
     }
 
-    .log-entry {
-      margin-bottom: 4px;
-      padding: 3px 4px;
-      border-radius: 3px;
-      word-break: break-all;
-      line-height: 1.4;
-    }
-
-    .log-info   { color: #888; }
-    .log-send   { color: #4af; background: #001520; }
-    .log-recv   { color: #4f4; background: #001500; }
-    .log-field  { color: #fa4; background: #150a00; }
-    .log-error  { color: #f44; background: #150000; }
-
-    /* Status bar at bottom */
-    #statusbar {
+    /* ── Style label strip ── */
+    #style-strip {
+      position: absolute;
+      top: 0; left: 0; right: 0;
       height: 22px;
-      flex-shrink: 0;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      pointer-events: none;
+    }
+
+    #style-name {
+      font-size: 10px;
+      color: #fff;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    /* ── Processing overlay ── */
+    #overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 240px;
+      height: 240px;
+      background: rgba(0,0,0,0.65);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    #overlay.visible {
+      display: flex;
+    }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid #333;
+      border-top-color: #6af;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    #overlay-text {
+      font-size: 10px;
+      color: #aaa;
+      text-align: center;
+    }
+
+    /* ── Bottom bar ── */
+    #bar {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 38px;
       background: #111;
       border-top: 1px solid #222;
       display: flex;
@@ -82,171 +124,275 @@
 
     #status {
       flex: 1;
-      color: #aaa;
       font-size: 9px;
+      color: #888;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
     }
 
-    /* Clear log button */
-    #btn-clear {
-      height: 18px;
-      padding: 0 6px;
-      background: #1a1a1a;
-      border: 1px solid #333;
-      border-radius: 3px;
-      color: #666;
-      font-family: monospace;
-      font-size: 9px;
+    /* Scroll wheel hint arrows */
+    #arr-up, #arr-down {
+      font-size: 14px;
+      color: #444;
       cursor: pointer;
+      line-height: 1;
+      padding: 4px;
+      user-select: none;
+    }
+
+    /* Reset button — shown while in preview state */
+    #btn-reset {
+      display: none;
+      height: 28px;
+      padding: 0 10px;
+      background: #1a1a1a;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #aaa;
+      font-family: monospace;
+      font-size: 10px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    #btn-reset.visible {
+      display: block;
     }
   </style>
 </head>
 <body>
 <div id="app">
+
+  <!-- Camera and preview images -->
   <video id="video" autoplay playsinline muted></video>
+  <img   id="preview" alt="captured">
 
-  <div id="log">
-    <div class="log-entry log-info">Starting up…</div>
+  <!-- Current style name overlay at top -->
+  <div id="style-strip">
+    <span id="style-name">SIMPSONS</span>
   </div>
 
-  <div id="statusbar">
-    <span id="status">initializing</span>
-    <button id="btn-clear">CLR</button>
+  <!-- Processing spinner overlay -->
+  <div id="overlay">
+    <div class="spinner"></div>
+    <div id="overlay-text">Sending to r1…</div>
   </div>
+
+  <!-- Bottom bar: status + scroll hints + reset -->
+  <div id="bar">
+    <span id="arr-up">▲</span>
+    <span id="status">▲▼ to change style</span>
+    <span id="arr-down">▼</span>
+    <button id="btn-reset">↺ retake</button>
+  </div>
+
 </div>
-
 <script>
+  // ─── R1 detection ─────────────────────────────────────────────────────────
   const isR1 = typeof PluginMessageHandler !== 'undefined';
 
-  // ─── DOM ──────────────────────────────────────────────────────────────────
-  const videoEl   = document.getElementById('video');
-  const logEl     = document.getElementById('log');
-  const statusEl  = document.getElementById('status');
-  const btnClear  = document.getElementById('btn-clear');
+  // ─── Style list ───────────────────────────────────────────────────────────
+  // Prompts sourced from the official Rabbit AI Camera Styles Creation
+  const STYLES = [
+    { name: 'SIMPSONS',    prompt: 'Take a picture in the style of a Simpsons cartoon.' },
+    { name: 'GHIBLI',      prompt: 'Take a picture in the Studio Ghibli anime style — soft colors, whimsical atmosphere, and hand-drawn aesthetic.' },
+    { name: 'PIXAR',       prompt: 'Take a picture in the style of Pixar Animation.' },
+    { name: 'MINECRAFT',   prompt: 'Take a picture in the style of Minecraft.' },
+    { name: 'LEGO',        prompt: 'Take a picture and make it LEGO minifigures.' },
+    { name: 'WATERCOLOR',  prompt: 'Take a picture in the style of a Watercolor painting.' },
+    { name: 'CYBERPUNK',   prompt: 'Take a picture in a cyberpunk style with neon colors, tech elements, and futuristic vibes.' },
+    { name: 'COMIC',       prompt: 'Take a picture and make the subject a superhero in a comic book with several frames.' },
+    { name: 'FUNKO POP',   prompt: 'Take a picture and turn the subject into a Funko Pop.' },
+    { name: 'WARHOL',      prompt: 'Take a picture in the style of Andy Warhol — pop art with four duplicated images in a frame.' },
+    { name: 'RENAISSANCE', prompt: 'Take a picture in the style of a Renaissance Painting with depth, realism, and natural light.' },
+    { name: 'WANTED',      prompt: 'Take a picture in the style of an Old West Wanted Poster. The poster title is WANTED.' },
+    { name: 'TIME COVER',  prompt: 'Take a picture in the style of a polished TIME magazine cover. The title is PERSON OF THE YEAR.' },
+    { name: 'SOUTH PARK',  prompt: 'Take a picture in the style of a South Park cartoon.' },
+    { name: 'PERFECT',     prompt: 'Take a picture and make it picture perfect — improve lighting, colors, and overall composition. Make it photorealistic. 8k resolution.' },
+  ];
 
-  // ─── Logging ──────────────────────────────────────────────────────────────
-  function log(msg, cls = 'log-info') {
-    const el = document.createElement('div');
-    el.className = `log-entry ${cls}`;
-    el.textContent = msg;
-    logEl.appendChild(el);
-    logEl.scrollTop = logEl.scrollHeight;
+  let styleIndex = 0;
+
+  // ─── State ────────────────────────────────────────────────────────────────
+  // 'live'       — camera is showing, ready to shoot
+  // 'sending'    — captured, sending to bridge, spinner up
+  // 'processing' — bridge confirmed receipt, spinner still up
+  // 'done'       — complete (or timed out), reset available
+  let state = 'live';
+
+  // ─── DOM refs ─────────────────────────────────────────────────────────────
+  const appEl       = document.getElementById('app');
+  const videoEl     = document.getElementById('video');
+  const previewEl   = document.getElementById('preview');
+  const overlayEl   = document.getElementById('overlay');
+  const overlayText = document.getElementById('overlay-text');
+  const styleNameEl = document.getElementById('style-name');
+  const statusEl    = document.getElementById('status');
+  const btnReset    = document.getElementById('btn-reset');
+
+  // ─── UI helpers ───────────────────────────────────────────────────────────
+  function setState(s) {
+    state = s;
+    switch (s) {
+      case 'live':
+        videoEl.style.display   = 'block';
+        previewEl.style.display = 'none';
+        overlayEl.classList.remove('visible');
+        btnReset.classList.remove('visible');
+        appEl.style.borderColor = '#222';
+        setStatus('▲▼ change style · side btn shoot');
+        break;
+      case 'sending':
+        videoEl.style.display   = 'none';
+        previewEl.style.display = 'block';
+        overlayEl.classList.add('visible');
+        overlayText.textContent = 'Sending to r1…';
+        btnReset.classList.remove('visible');
+        appEl.style.borderColor = '#884400';
+        setStatus('sending…');
+        break;
+      case 'processing':
+        overlayText.textContent = 'r1 is transforming…';
+        appEl.style.borderColor = '#334499';
+        setStatus('processing on device…');
+        break;
+      case 'done':
+        overlayEl.classList.remove('visible');
+        btnReset.classList.add('visible');
+        appEl.style.borderColor = '#226622';
+        setStatus('done · result in r1 gallery');
+        break;
+      case 'error':
+        overlayEl.classList.remove('visible');
+        btnReset.classList.add('visible');
+        appEl.style.borderColor = '#662222';
+        break;
+    }
   }
 
   function setStatus(msg) {
     statusEl.textContent = msg;
   }
 
-  // ─── Response handler — called from BOTH listener strategies ──────────────
-  // We want to dump every single field so we know exactly what the bridge returns.
-  function handleResponse(data, source) {
-    log(`── response via ${source} ──`, 'log-recv');
-
-    if (data === null || data === undefined) {
-      log('(null/undefined data)', 'log-error');
-      return;
-    }
-
-    if (typeof data === 'string') {
-      log(`raw string: ${data.substring(0, 120)}`, 'log-field');
-      try {
-        data = JSON.parse(data);
-        log('(parsed as JSON)', 'log-info');
-      } catch(e) {
-        log('(not JSON)', 'log-info');
-        setStatus('got string response');
-        return;
-      }
-    }
-
-    // Dump every key-value pair
-    const keys = Object.keys(data);
-    if (keys.length === 0) {
-      log('(empty object)', 'log-error');
-    } else {
-      keys.forEach(k => {
-        const v = data[k];
-        const display = (typeof v === 'string' && v.length > 80)
-          ? v.substring(0, 80) + `… [${v.length}ch]`
-          : JSON.stringify(v);
-        log(`${k}: ${display}`, 'log-field');
-      });
-    }
-
-    setStatus(`response (${keys.length} fields)`);
-    // Update border color based on known status values
-    if (data.status === 'processing') {
-      document.getElementById('app').style.borderColor = '#3344cc';
-      setStatus('processing…');
-    } else if (data.status === 'complete') {
-      document.getElementById('app').style.borderColor = '#33cc44';
-      setStatus('complete!');
-    } else if (data.error) {
-      document.getElementById('app').style.borderColor = '#cc3333';
-      setStatus('error: ' + data.error);
-    }
+  function updateStyleLabel() {
+    styleNameEl.textContent = STYLES[styleIndex].name;
   }
 
-  // ─── Strategy 1: direct window.onPluginMessage assignment ─────────────────
-  // This is the pattern our original skill used.
-  window.onPluginMessage = function(data) {
-    handleResponse(data, 'window.onPluginMessage');
-  };
-
-  // ─── Strategy 2: CustomEvent listener ─────────────────────────────────────
-  // This is how the official Rabbit SDK wrapper dispatches messages.
-  // The SDK's setupPluginMessageHandler() does:
-  //   window.onPluginMessage = function(data) {
-  //     window.dispatchEvent(new CustomEvent('pluginMessage', { detail: data }))
-  //   }
-  // So if rabbitOS calls window.onPluginMessage internally, this fires too.
-  window.addEventListener('pluginMessage', function(e) {
-    handleResponse(e.detail, 'CustomEvent:pluginMessage');
-  });
-
   // ─── Capture & send ───────────────────────────────────────────────────────
-  function captureAndSend() {
-    if (!videoEl.videoWidth) {
-      log('video not ready', 'log-error');
-      return;
-    }
+  function shoot() {
+    if (state !== 'live') return;
 
-    // Capture at full camera resolution (as the official app does)
+    // Capture full resolution frame
     const canvas = document.createElement('canvas');
-    canvas.width  = videoEl.videoWidth;
-    canvas.height = videoEl.videoHeight;
+    canvas.width  = videoEl.videoWidth  || 640;
+    canvas.height = videoEl.videoHeight || 480;
     canvas.getContext('2d').drawImage(videoEl, 0, 0);
 
-    const dataUri  = canvas.toDataURL('image/jpeg', 0.8);
-    const sizeKB   = Math.round(dataUri.length * 0.75 / 1024);
+    const dataUri = canvas.toDataURL('image/jpeg', 0.8);
 
-    log(`captured ${canvas.width}×${canvas.height} ~${sizeKB}KB`, 'log-send');
+    // Show freeze-frame as preview
+    previewEl.src = dataUri;
+    setState('sending');
 
-    // Fixed style prompt for testing
-    const prompt = 'Take a picture in the style of a Simpsons cartoon.';
-    log(`sending: "${prompt}"`, 'log-send');
-    log(`pluginId: com.r1.pixelart`, 'log-send');
+    const style = STYLES[styleIndex];
 
-    setStatus('sending…');
-    document.getElementById('app').style.borderColor = '#884400';
+    // Register response handler BEFORE sending.
+    // The bridge calls window.onPluginMessage(data) where data.status is:
+    //   "processing" — r1 has received and started generating
+    //   "complete"   — may or may not fire back into WebView
+    //                  (the generated image goes to r1 OS gallery, not here)
+    // We set a fallback timeout in case "complete" never fires.
+    window.onPluginMessage = function(data) {
+      if (data && data.status === 'processing') {
+        setState('processing');
+      } else if (data && data.status === 'complete') {
+        clearTimeout(fallbackTimer);
+        setState('done');
+      } else if (data && data.error) {
+        clearTimeout(fallbackTimer);
+        setStatus('error: ' + data.error);
+        setState('error');
+      }
+    };
 
+    // Also listen via CustomEvent in case bridge uses that path
+    // (the official Rabbit SDK wrapper dispatches pluginMessage CustomEvents)
+    function onCustomEvent(e) {
+      window.onPluginMessage && window.onPluginMessage(e.detail);
+      window.removeEventListener('pluginMessage', onCustomEvent);
+    }
+    window.addEventListener('pluginMessage', onCustomEvent);
+
+    // Send to bridge
     if (isR1) {
       PluginMessageHandler.postMessage(JSON.stringify({
-        message:     prompt,
+        message:     style.prompt,
         pluginId:    'com.r1.pixelart',
         imageBase64: dataUri
       }));
-      log('sent to r1 bridge ✓', 'log-info');
     } else {
       // Desktop simulation
-      log('[desktop: bridge not available]', 'log-error');
-      setTimeout(() => handleResponse({ status: 'processing' }, 'simulated'), 500);
-      setTimeout(() => handleResponse({ status: 'complete', message: 'done' }, 'simulated'), 2000);
+      setTimeout(() => { window.onPluginMessage({ status: 'processing' }); }, 600);
+      setTimeout(() => { window.onPluginMessage({ status: 'complete' }); }, 3000);
     }
+
+    // Fallback: if "complete" never fires (likely — it goes to OS, not WebView),
+    // transition to "done" state after a reasonable wait so the user isn't stuck.
+    // Based on the official app behavior: they just show "Image sent!" and never
+    // explicitly reset — so a generous timeout is the right UX here.
+    const fallbackTimer = setTimeout(() => {
+      if (state === 'sending' || state === 'processing') {
+        setState('done');
+        setStatus('sent · result in r1 gallery');
+      }
+    }, 15000); // 15 seconds — generous for slow connections
   }
+
+  // ─── Reset to live camera ─────────────────────────────────────────────────
+  function reset() {
+    window.onPluginMessage = null; // clear handler
+    setState('live');
+  }
+
+  // ─── Style cycling ────────────────────────────────────────────────────────
+  function nextStyle() {
+    if (state !== 'live') return;
+    styleIndex = (styleIndex + 1) % STYLES.length;
+    updateStyleLabel();
+  }
+
+  function prevStyle() {
+    if (state !== 'live') return;
+    styleIndex = (styleIndex - 1 + STYLES.length) % STYLES.length;
+    updateStyleLabel();
+  }
+
+  // ─── Hardware events ──────────────────────────────────────────────────────
+  window.addEventListener('sideClick',      shoot);
+  window.addEventListener('longPressStart', shoot);
+  window.addEventListener('scrollDown',     nextStyle);
+  window.addEventListener('scrollUp',       prevStyle);
+
+  // ─── Touch events ─────────────────────────────────────────────────────────
+  document.body.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.target;
+    if (t === videoEl || t === previewEl) shoot();
+    if (t.id === 'btn-reset' || t.closest('#btn-reset')) reset();
+    if (t.id === 'arr-up')   prevStyle();
+    if (t.id === 'arr-down') nextStyle();
+  }, { passive: false });
+
+  // Desktop click fallbacks
+  videoEl.addEventListener('click', shoot);
+  btnReset.addEventListener('click', reset);
+  document.getElementById('arr-up').addEventListener('click', prevStyle);
+  document.getElementById('arr-down').addEventListener('click', nextStyle);
 
   // ─── Init camera ──────────────────────────────────────────────────────────
   async function init() {
-    log(`isR1: ${isR1}`, 'log-info');
+    updateStyleLabel();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' },
@@ -255,42 +401,13 @@
       videoEl.srcObject = stream;
       await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
       await videoEl.play();
-      log(`camera ready ${videoEl.videoWidth}×${videoEl.videoHeight}`, 'log-info');
-      setStatus('press side button');
+      setState('live');
     } catch (err) {
-      log(`camera error: ${err.message}`, 'log-error');
-      setStatus('camera error');
+      setStatus('camera error: ' + err.message);
+      appEl.style.borderColor = '#662222';
     }
   }
 
-  // ─── Hardware events ──────────────────────────────────────────────────────
-  window.addEventListener('sideClick', () => {
-    log('── sideClick ──', 'log-info');
-    captureAndSend();
-  });
-
-  // Touch fallback — tap anywhere on video to trigger
-  document.body.addEventListener('touchstart', e => {
-    e.preventDefault();
-    if (e.target === videoEl || e.target.closest('#video')) {
-      log('── tap ──', 'log-info');
-      captureAndSend();
-    }
-  }, { passive: false });
-
-  // Desktop click fallback
-  videoEl.addEventListener('click', () => {
-    log('── click ──', 'log-info');
-    captureAndSend();
-  });
-
-  // ─── Clear log ────────────────────────────────────────────────────────────
-  btnClear.addEventListener('click', () => {
-    logEl.innerHTML = '';
-    log('log cleared', 'log-info');
-  });
-
-  // ─── Boot ─────────────────────────────────────────────────────────────────
   init();
 </script>
 </body>
