@@ -1,9 +1,18 @@
 <!DOCTYPE html>
-<html lang="es">
+<!--
+  pixelart-test — Rabbit R1 Creation
+  Diagnostic tool for the com.r1.pixelart image generation bridge.
+  - Opens camera, captures on side-button press
+  - Sends to pixelart bridge with a fixed style prompt
+  - Logs EVERY raw field of every response so we can see what comes back
+  - Uses BOTH window.onPluginMessage and pluginMessage CustomEvent listener
+    to figure out which channel the pixelart bridge uses
+-->
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Simpsonizador</title>
+  <title>Pixelart Test</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -11,331 +20,278 @@
       width: 240px;
       height: 282px;
       overflow: hidden;
-      background: #1a0a2e;
-      color: #fff;
+      background: #0a0a0a;
+      color: #e0e0e0;
       font-family: monospace;
-      font-size: 11px;
+      font-size: 10px;
     }
 
     #app {
       width: 240px;
       height: 282px;
-      border: 4px solid #FFD700;
+      border: 3px solid #222;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      position: relative;
     }
 
-    /* Header */
-    #header {
-      width: 100%;
-      background: #FFD700;
-      color: #1a0a2e;
-      text-align: center;
-      font-size: 13px;
-      font-weight: bold;
-      padding: 4px 0;
-      letter-spacing: 1px;
-      flex-shrink: 0;
-    }
-
-    /* Camera preview */
+    /* Live camera preview — small to leave room for log */
     #video {
-      width: 228px;
-      height: 160px;
+      width: 240px;
+      height: 120px;
       object-fit: cover;
-      background: #000;
+      background: #111;
+      flex-shrink: 0;
       display: block;
-      flex-shrink: 0;
     }
 
-    /* Status area */
-    #status {
-      width: 100%;
-      text-align: center;
-      font-size: 10px;
-      padding: 3px 4px;
-      min-height: 20px;
-      color: #FFD700;
-      flex-shrink: 0;
-    }
-
-    /* Buttons row */
-    #controls {
-      display: flex;
-      flex-direction: row;
-      gap: 6px;
-      padding: 4px 6px;
-      width: 100%;
-      flex-shrink: 0;
-    }
-
-    .btn {
+    /* Scrollable response log */
+    #log {
       flex: 1;
-      height: 48px;
-      border: none;
-      border-radius: 6px;
-      font-size: 10px;
-      font-weight: bold;
-      cursor: pointer;
-      font-family: monospace;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 4px;
+      background: #0d0d0d;
+      border-top: 1px solid #222;
+    }
+
+    .log-entry {
+      margin-bottom: 4px;
+      padding: 3px 4px;
+      border-radius: 3px;
+      word-break: break-all;
+      line-height: 1.4;
+    }
+
+    .log-info   { color: #888; }
+    .log-send   { color: #4af; background: #001520; }
+    .log-recv   { color: #4f4; background: #001500; }
+    .log-field  { color: #fa4; background: #150a00; }
+    .log-error  { color: #f44; background: #150000; }
+
+    /* Status bar at bottom */
+    #statusbar {
+      height: 22px;
+      flex-shrink: 0;
+      background: #111;
+      border-top: 1px solid #222;
       display: flex;
-      flex-direction: column;
       align-items: center;
-      justify-content: center;
-      gap: 2px;
-    }
-
-    #btnCapture {
-      background: #FFD700;
-      color: #1a0a2e;
-    }
-
-    #btnCapture:active { opacity: 0.75; }
-    #btnCapture:disabled {
-      background: #555;
-      color: #999;
-    }
-
-    #btnSave {
-      background: #00aa44;
-      color: #fff;
-    }
-
-    #btnSave:active { opacity: 0.75; }
-    #btnSave:disabled {
-      background: #555;
-      color: #999;
-    }
-
-    .btn-icon { font-size: 18px; }
-
-    /* Overlay spinner shown while processing */
-    #overlay {
-      display: none;
-      position: absolute;
-      top: 26px; /* below header */
-      left: 0;
-      width: 228px;
-      height: 160px;
-      background: rgba(0,0,0,0.75);
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
+      padding: 0 6px;
       gap: 6px;
     }
 
-    #overlay.visible { display: flex; }
-
-    .spinner {
-      width: 28px;
-      height: 28px;
-      border: 3px solid #333;
-      border-top-color: #FFD700;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+    #status {
+      flex: 1;
+      color: #aaa;
+      font-size: 9px;
     }
 
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    #overlayText {
-      color: #FFD700;
-      font-size: 11px;
-      text-align: center;
-      padding: 0 10px;
+    /* Clear log button */
+    #btn-clear {
+      height: 18px;
+      padding: 0 6px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 3px;
+      color: #666;
+      font-family: monospace;
+      font-size: 9px;
+      cursor: pointer;
     }
   </style>
 </head>
 <body>
 <div id="app">
-
-  <div id="header">🍩 SIMPSONIZADOR</div>
-
-  <!-- Live camera preview -->
   <video id="video" autoplay playsinline muted></video>
 
-  <!-- Processing overlay (shown on top of video area) -->
-  <div id="overlay">
-    <div class="spinner"></div>
-    <div id="overlayText">Transformando…</div>
+  <div id="log">
+    <div class="log-entry log-info">Starting up…</div>
   </div>
 
-  <div id="status">Iniciando cámara…</div>
-
-  <div id="controls">
-    <button id="btnCapture" class="btn" disabled>
-      <span class="btn-icon">📸</span>
-      <span>Capturar</span>
-    </button>
-    <button id="btnSave" class="btn" disabled>
-      <span class="btn-icon">📓</span>
-      <span>Guardar</span>
-    </button>
+  <div id="statusbar">
+    <span id="status">initializing</span>
+    <button id="btn-clear">CLR</button>
   </div>
-
 </div>
 
 <script>
-  // ── Guards ────────────────────────────────────────────────────────────────
   const isR1 = typeof PluginMessageHandler !== 'undefined';
 
-  // ── Elements ──────────────────────────────────────────────────────────────
-  const video      = document.getElementById('video');
-  const overlay    = document.getElementById('overlay');
-  const overlayTxt = document.getElementById('overlayText');
-  const statusEl   = document.getElementById('status');
-  const btnCapture = document.getElementById('btnCapture');
-  const btnSave    = document.getElementById('btnSave');
-  const appEl      = document.getElementById('app');
+  // ─── DOM ──────────────────────────────────────────────────────────────────
+  const videoEl   = document.getElementById('video');
+  const logEl     = document.getElementById('log');
+  const statusEl  = document.getElementById('status');
+  const btnClear  = document.getElementById('btn-clear');
 
-  // ── State ─────────────────────────────────────────────────────────────────
-  let cameraStream     = null;
-  let lastCapturedUri  = null;  // base64 JPEG data URI of captured frame
-  let transformDone    = false; // true once pixelart bridge says 'complete'
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-  function setStatus(msg) { statusEl.textContent = msg; }
-
-  function setBorderColor(hex) { appEl.style.borderColor = hex; }
-
-  function showOverlay(msg) {
-    overlayTxt.textContent = msg;
-    overlay.classList.add('visible');
+  // ─── Logging ──────────────────────────────────────────────────────────────
+  function log(msg, cls = 'log-info') {
+    const el = document.createElement('div');
+    el.className = `log-entry ${cls}`;
+    el.textContent = msg;
+    logEl.appendChild(el);
+    logEl.scrollTop = logEl.scrollHeight;
   }
 
-  function hideOverlay() { overlay.classList.remove('visible'); }
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+  }
 
-  // ── Camera init ───────────────────────────────────────────────────────────
-  async function startCamera() {
+  // ─── Response handler — called from BOTH listener strategies ──────────────
+  // We want to dump every single field so we know exactly what the bridge returns.
+  function handleResponse(data, source) {
+    log(`── response via ${source} ──`, 'log-recv');
+
+    if (data === null || data === undefined) {
+      log('(null/undefined data)', 'log-error');
+      return;
+    }
+
+    if (typeof data === 'string') {
+      log(`raw string: ${data.substring(0, 120)}`, 'log-field');
+      try {
+        data = JSON.parse(data);
+        log('(parsed as JSON)', 'log-info');
+      } catch(e) {
+        log('(not JSON)', 'log-info');
+        setStatus('got string response');
+        return;
+      }
+    }
+
+    // Dump every key-value pair
+    const keys = Object.keys(data);
+    if (keys.length === 0) {
+      log('(empty object)', 'log-error');
+    } else {
+      keys.forEach(k => {
+        const v = data[k];
+        const display = (typeof v === 'string' && v.length > 80)
+          ? v.substring(0, 80) + `… [${v.length}ch]`
+          : JSON.stringify(v);
+        log(`${k}: ${display}`, 'log-field');
+      });
+    }
+
+    setStatus(`response (${keys.length} fields)`);
+    // Update border color based on known status values
+    if (data.status === 'processing') {
+      document.getElementById('app').style.borderColor = '#3344cc';
+      setStatus('processing…');
+    } else if (data.status === 'complete') {
+      document.getElementById('app').style.borderColor = '#33cc44';
+      setStatus('complete!');
+    } else if (data.error) {
+      document.getElementById('app').style.borderColor = '#cc3333';
+      setStatus('error: ' + data.error);
+    }
+  }
+
+  // ─── Strategy 1: direct window.onPluginMessage assignment ─────────────────
+  // This is the pattern our original skill used.
+  window.onPluginMessage = function(data) {
+    handleResponse(data, 'window.onPluginMessage');
+  };
+
+  // ─── Strategy 2: CustomEvent listener ─────────────────────────────────────
+  // This is how the official Rabbit SDK wrapper dispatches messages.
+  // The SDK's setupPluginMessageHandler() does:
+  //   window.onPluginMessage = function(data) {
+  //     window.dispatchEvent(new CustomEvent('pluginMessage', { detail: data }))
+  //   }
+  // So if rabbitOS calls window.onPluginMessage internally, this fires too.
+  window.addEventListener('pluginMessage', function(e) {
+    handleResponse(e.detail, 'CustomEvent:pluginMessage');
+  });
+
+  // ─── Capture & send ───────────────────────────────────────────────────────
+  function captureAndSend() {
+    if (!videoEl.videoWidth) {
+      log('video not ready', 'log-error');
+      return;
+    }
+
+    // Capture at full camera resolution (as the official app does)
+    const canvas = document.createElement('canvas');
+    canvas.width  = videoEl.videoWidth;
+    canvas.height = videoEl.videoHeight;
+    canvas.getContext('2d').drawImage(videoEl, 0, 0);
+
+    const dataUri  = canvas.toDataURL('image/jpeg', 0.8);
+    const sizeKB   = Math.round(dataUri.length * 0.75 / 1024);
+
+    log(`captured ${canvas.width}×${canvas.height} ~${sizeKB}KB`, 'log-send');
+
+    // Fixed style prompt for testing
+    const prompt = 'Take a picture in the style of a Simpsons cartoon.';
+    log(`sending: "${prompt}"`, 'log-send');
+    log(`pluginId: com.r1.pixelart`, 'log-send');
+
+    setStatus('sending…');
+    document.getElementById('app').style.borderColor = '#884400';
+
+    if (isR1) {
+      PluginMessageHandler.postMessage(JSON.stringify({
+        message:     prompt,
+        pluginId:    'com.r1.pixelart',
+        imageBase64: dataUri
+      }));
+      log('sent to r1 bridge ✓', 'log-info');
+    } else {
+      // Desktop simulation
+      log('[desktop: bridge not available]', 'log-error');
+      setTimeout(() => handleResponse({ status: 'processing' }, 'simulated'), 500);
+      setTimeout(() => handleResponse({ status: 'complete', message: 'done' }, 'simulated'), 2000);
+    }
+  }
+
+  // ─── Init camera ──────────────────────────────────────────────────────────
+  async function init() {
+    log(`isR1: ${isR1}`, 'log-info');
     try {
-      cameraStream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' },
         audio: false
       });
-      video.srcObject = cameraStream;
-      await new Promise(res => { video.onloadedmetadata = res; });
-      video.play();
-      setStatus('Listo. Pulsa Capturar.');
-      setBorderColor('#FFD700');
-      btnCapture.disabled = false;
+      videoEl.srcObject = stream;
+      await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
+      await videoEl.play();
+      log(`camera ready ${videoEl.videoWidth}×${videoEl.videoHeight}`, 'log-info');
+      setStatus('press side button');
     } catch (err) {
-      setStatus('Error cámara: ' + err.message);
-      setBorderColor('#ff3333');
+      log(`camera error: ${err.message}`, 'log-error');
+      setStatus('camera error');
     }
   }
 
-  // ── Capture frame from video ──────────────────────────────────────────────
-  function captureFrame() {
-    const canvas = document.createElement('canvas');
-    // Use full video resolution for best pixelart output
-    canvas.width  = video.videoWidth  || 320;
-    canvas.height = video.videoHeight || 240;
-    canvas.getContext('2d').drawImage(video, 0, 0);
-    return canvas.toDataURL('image/jpeg', 0.8);
-  }
-
-  // ── Send to com.r1.pixelart bridge ────────────────────────────────────────
-  function simpsonize(imageDataUri) {
-    if (!isR1) {
-      // Desktop preview: fake the transformation flow
-      setTimeout(() => {
-        hideOverlay();
-        setStatus('✅ Transformación OK (demo)');
-        setBorderColor('#00aa44');
-        btnSave.disabled = false;
-        transformDone = true;
-      }, 2000);
-      return;
-    }
-
-    // Register response handler BEFORE sending
-    window.onPluginMessage = function(data) {
-      if (data.status === 'processing') {
-        overlayTxt.textContent = 'IA trabajando…';
-        setBorderColor('#ff8800');
-
-      } else if (data.status === 'complete') {
-        hideOverlay();
-        setStatus('✅ ¡Simpsonizado! Guarda en Journal.');
-        setBorderColor('#00aa44');
-        btnCapture.disabled = false;
-        btnSave.disabled = false;
-        transformDone = true;
-
-      } else if (data.error) {
-        hideOverlay();
-        setStatus('Error: ' + (data.error || 'desconocido'));
-        setBorderColor('#ff3333');
-        btnCapture.disabled = false;
-      } else {
-        // Unexpected — log raw for debug
-        setStatus(JSON.stringify(data).substring(0, 60));
-      }
-    };
-
-    PluginMessageHandler.postMessage(JSON.stringify({
-      message:     'Take a picture in the style of a Simpsons cartoon.',
-      pluginId:    'com.r1.pixelart',
-      imageBase64: imageDataUri
-    }));
-  }
-
-  // ── Save to Journal ───────────────────────────────────────────────────────
-  function saveToJournal() {
-    if (!isR1) {
-      setStatus('Journal: solo disponible en r1.');
-      return;
-    }
-    if (!lastCapturedUri) {
-      setStatus('Primero captura una foto.');
-      return;
-    }
-
-    // wantsJournalEntry saves the LLM response to the r1 Journal.
-    // We embed the captured image in the message so the journal entry
-    // includes a description + the image reference.
-    window.onPluginMessage = function(data) {
-      setStatus('📓 Guardado en Journal.');
-      setBorderColor('#FFD700');
-      btnSave.disabled = true;
-    };
-
-    PluginMessageHandler.postMessage(JSON.stringify({
-      message: 'Esta foto fue transformada al estilo de los Simpsons.\nIMAGE_DATA_URI: ' + lastCapturedUri,
-      useLLM:           true,
-      wantsR1Response:  false,
-      wantsJournalEntry: true
-    }));
-  }
-
-  // ── Button events (addEventListener — never inline onclick) ───────────────
-  btnCapture.addEventListener('click', function() {
-    if (!cameraStream) { setStatus('Cámara no lista.'); return; }
-
-    transformDone = false;
-    btnSave.disabled = true;
-    btnCapture.disabled = true;
-
-    lastCapturedUri = captureFrame();
-    showOverlay('Enviando a IA…');
-    setStatus('Procesando…');
-    setBorderColor('#ff8800');
-
-    simpsonize(lastCapturedUri);
+  // ─── Hardware events ──────────────────────────────────────────────────────
+  window.addEventListener('sideClick', () => {
+    log('── sideClick ──', 'log-info');
+    captureAndSend();
   });
 
-  btnSave.addEventListener('click', function() {
-    saveToJournal();
+  // Touch fallback — tap anywhere on video to trigger
+  document.body.addEventListener('touchstart', e => {
+    e.preventDefault();
+    if (e.target === videoEl || e.target.closest('#video')) {
+      log('── tap ──', 'log-info');
+      captureAndSend();
+    }
+  }, { passive: false });
+
+  // Desktop click fallback
+  videoEl.addEventListener('click', () => {
+    log('── click ──', 'log-info');
+    captureAndSend();
   });
 
-  // ── Hardware button: PTT side click also triggers capture ─────────────────
-  window.addEventListener('sideClick', function() {
-    if (!btnCapture.disabled) btnCapture.click();
+  // ─── Clear log ────────────────────────────────────────────────────────────
+  btnClear.addEventListener('click', () => {
+    logEl.innerHTML = '';
+    log('log cleared', 'log-info');
   });
 
-  // ── Boot ──────────────────────────────────────────────────────────────────
-  startCamera();
+  // ─── Boot ─────────────────────────────────────────────────────────────────
+  init();
 </script>
 </body>
 </html>
