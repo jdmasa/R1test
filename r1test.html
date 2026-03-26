@@ -215,11 +215,12 @@
   let styleIndex = 0;
 
   // ─── State ────────────────────────────────────────────────────────────────
+  // 'initializing' — camera is still loading
   // 'live'       — camera is showing, ready to shoot
   // 'sending'    — captured, sending to bridge, spinner up
   // 'processing' — bridge confirmed receipt, spinner still up
   // 'done'       — complete (or timed out), reset available
-  let state = 'live';
+  let state = 'initializing';
 
   // ─── DOM refs ─────────────────────────────────────────────────────────────
   const appEl       = document.getElementById('app');
@@ -369,21 +370,21 @@
   }
 // ─── Init camera ──────────────────────────────────────────────────────────
   async function init() {
-    updateStyleLabel();
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false
-      });
-      videoEl.srcObject = stream;
-      await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
-      await videoEl.play();
-      setState('live');
-    } catch (err) {
-      setStatus('camera error: ' + err.message);
-      appEl.style.borderColor = '#662222';
-    }
+  updateStyleLabel();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' },
+    });
+    videoEl.srcObject = stream;
+    await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
+    await videoEl.play();
+    setState('live');  // ← Only NOW set to 'live' after camera is ready
+  } catch (err) {
+    setStatus('camera error: ' + err.message);
+    appEl.style.borderColor = '#662222';
+    setState('error');  // ← Also set state here on error
   }
+}
   // ─── Hardware events ──────────────────────────────────────────────────────
   window.addEventListener('sideClick',      shoot);
   window.addEventListener('longPressStart', shoot);
