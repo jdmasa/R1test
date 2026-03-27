@@ -7,19 +7,16 @@
   v3 — initInProgress guard; sideClick retries init
   v4 — splash screen with START button for guaranteed user gesture
   v5 — matched ref.js: no `muted`, onloadedmetadata callback, `ideal` constraints
-  v6 — THE ROOT FIX:
-       The video element is no longer hidden (display:none) at any point.
-       It sits behind the splash at z-index 0, fully rendered in the DOM from
-       page load. This keeps it in the browser's "visible" surface so that:
-         a) getUserMedia / srcObject attachment works without quirks
-         b) The tap on START falls through to the video layer, so the browser
-            sees the play() call as directly triggered by a touch on the video
-            itself — matching exactly how working plugins get past the autoplay
-            policy (the "Play symbol" the user sees is the browser waiting for
-            a tap on the video element specifically).
-       The splash sits on top (z-index 100) and is simply removed on START.
-       A "TAP TO PLAY" hint is shown over the video if it stalls after init,
-       and tapping anywhere on the video area calls videoEl.play() directly.
+  v6 — video never hidden; tap-to-play fallback overlay
+  v7 — THE SPEED FIX:
+       Removed ALL explicit videoEl.play() calls. The `autoplay` attribute
+       on the <video> element handles playback automatically the moment
+       srcObject is assigned — no Promise, no gesture gate, no waiting.
+       getUserMedia is now called SYNCHRONOUSLY inside the touchstart/click
+       handler on the START button (not via a setTimeout or deferred function),
+       keeping the tightest possible user-gesture → getUserMedia chain.
+       onloadedmetadata fires and the camera appears immediately, matching
+       the behaviour of working plugins.
 -->
 <html lang="en">
 <head>
@@ -49,10 +46,7 @@
       transition: border-color 0.2s ease;
     }
 
-    /* ── Video always present, never hidden ── */
-    /* It sits at z-index 0 behind everything.  */
-    /* The splash covers it; removing splash     */
-    /* reveals it without any display toggle.    */
+    /* Video always in DOM, never hidden, autoplay handles playback */
     #video {
       position: absolute;
       top: 0; left: 0;
@@ -72,81 +66,6 @@
       display: none;
       z-index: 1;
     }
-
-    /* ── Tap-to-play hint — shown if video stalls after init ── */
-    #tap-hint {
-      position: absolute;
-      top: 0; left: 0;
-      width: 240px;
-      height: 240px;
-      display: none;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      z-index: 2;
-      background: rgba(0,0,0,0.5);
-    }
-
-    #tap-hint.visible { display: flex; }
-
-    #tap-hint span {
-      font-size: 32px;
-    }
-
-    #tap-hint p {
-      font-size: 9px;
-      color: #aaa;
-      text-align: center;
-    }
-
-    /* ── Splash screen — sits on top of everything ── */
-    #splash {
-      position: absolute;
-      top: 0; left: 0;
-      width: 240px;
-      height: 282px;
-      background: #0a0a0a;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 14px;
-      z-index: 100;
-    }
-
-    #splash-title {
-      font-size: 13px;
-      letter-spacing: 0.15em;
-      text-transform: uppercase;
-      color: #fff;
-    }
-
-    #splash-sub {
-      font-size: 9px;
-      color: #555;
-      text-align: center;
-      line-height: 1.6;
-      padding: 0 20px;
-    }
-
-    #btn-start {
-      margin-top: 6px;
-      width: 120px;
-      height: 36px;
-      background: #fff;
-      color: #000;
-      border: none;
-      border-radius: 4px;
-      font-family: monospace;
-      font-size: 12px;
-      font-weight: bold;
-      letter-spacing: 0.1em;
-      cursor: pointer;
-      text-transform: uppercase;
-    }
-
-    #btn-start:active { background: #ccc; }
 
     /* ── Style label strip ── */
     #style-strip {
@@ -249,37 +168,74 @@
     }
 
     #btn-reset.visible { display: block; }
+
+    /* ── Splash — on top of everything ── */
+    #splash {
+      position: absolute;
+      top: 0; left: 0;
+      width: 240px;
+      height: 282px;
+      background: #0a0a0a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      z-index: 100;
+    }
+
+    #splash-title {
+      font-size: 13px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: #fff;
+    }
+
+    #splash-sub {
+      font-size: 9px;
+      color: #555;
+      text-align: center;
+      line-height: 1.6;
+      padding: 0 20px;
+    }
+
+    #btn-start {
+      margin-top: 6px;
+      width: 120px;
+      height: 36px;
+      background: #fff;
+      color: #000;
+      border: none;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      font-weight: bold;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      text-transform: uppercase;
+    }
+
+    #btn-start:active { background: #ccc; }
   </style>
 </head>
 <body>
 <div id="app">
 
-  <!-- Video is ALWAYS in the DOM and never hidden.
-       The splash covers it. Removing the splash reveals it.
-       This ensures the browser treats it as a persistent visible surface
-       and that play() calls are accepted as user-gesture-triggered. -->
+  <!-- Video is always present. autoplay fires the moment srcObject is set.
+       No play() call is ever needed or made. -->
   <video id="video" autoplay playsinline></video>
 
   <img id="preview" alt="captured">
 
-  <!-- Tap-to-play hint overlay — shown if video is paused after init -->
-  <div id="tap-hint">
-    <span>▶</span>
-    <p>tap to start camera</p>
-  </div>
-
-  <!-- Style name -->
   <div id="style-strip">
     <span id="style-name">SIMPSONS</span>
   </div>
 
-  <!-- Processing overlay -->
   <div id="overlay">
     <div class="spinner"></div>
     <div id="overlay-text">Sending to r1…</div>
   </div>
 
-  <!-- Bottom bar -->
   <div id="bar">
     <span id="arr-up">▲</span>
     <span id="status">tap START to begin</span>
@@ -287,7 +243,7 @@
     <button id="btn-reset">↺ retake</button>
   </div>
 
-  <!-- Splash sits on top — removed on START tap -->
+  <!-- Splash on top — removed the instant user taps START -->
   <div id="splash">
     <div id="splash-title">✦ Pixelart Cam</div>
     <div id="splash-sub">15 AI styles · scroll ▲▼ to pick<br>side button to shoot</div>
@@ -327,7 +283,6 @@
   const btnStart    = document.getElementById('btn-start');
   const videoEl     = document.getElementById('video');
   const previewEl   = document.getElementById('preview');
-  const tapHintEl   = document.getElementById('tap-hint');
   const overlayEl   = document.getElementById('overlay');
   const overlayText = document.getElementById('overlay-text');
   const styleNameEl = document.getElementById('style-name');
@@ -340,7 +295,6 @@
       case 'live':
         splashEl.style.display  = 'none';
         previewEl.style.display = 'none';
-        tapHintEl.classList.remove('visible');
         overlayEl.classList.remove('visible');
         btnReset.classList.remove('visible');
         appEl.style.borderColor = '#222';
@@ -348,7 +302,6 @@
         break;
       case 'sending':
         previewEl.style.display = 'block';
-        tapHintEl.classList.remove('visible');
         overlayEl.classList.add('visible');
         overlayText.textContent = 'Sending to r1…';
         btnReset.classList.remove('visible');
@@ -374,12 +327,14 @@
     }
   }
 
-  function setStatus(msg)      { statusEl.textContent = msg; }
-  function updateStyleLabel()  { styleNameEl.textContent = STYLES[styleIndex].name; }
+  function setStatus(msg)     { statusEl.textContent = msg; }
+  function updateStyleLabel() { styleNameEl.textContent = STYLES[styleIndex].name; }
 
   // ─── Init camera ──────────────────────────────────────────────────────────
-  // Uses .then()/.catch() — no async/await — to avoid any Promise stall on
-  // rabbitOS. play() is called inside onloadedmetadata, not awaited.
+  // v7: NO play() call anywhere. `autoplay` on the element handles it the
+  // moment srcObject is assigned. getUserMedia is called directly — this
+  // function should be invoked synchronously from within a touch/click handler
+  // to keep the tightest possible user-gesture chain.
   function init() {
     if (cameraReady || initInProgress) return;
     initInProgress = true;
@@ -393,38 +348,11 @@
       }
     })
     .then(function(stream) {
-      videoEl.srcObject = stream;
-
+      videoEl.srcObject = stream; // autoplay fires here automatically
       videoEl.onloadedmetadata = function() {
-        // Call play() directly here — this callback is the closest we can
-        // get to a synchronous user-gesture chain on rabbitOS.
-        // If play() is still blocked, the browser shows its native Play symbol;
-        // the tap-hint overlay will prompt the user to tap to unblock it.
-        var playResult = videoEl.play();
-
-        if (playResult !== undefined) {
-          playResult
-            .then(function() {
-              // play() succeeded
-              initInProgress = false;
-              cameraReady    = true;
-              setState('live');
-            })
-            .catch(function() {
-              // play() was blocked — show tap-to-play hint
-              initInProgress = false;
-              splashEl.style.display = 'none';
-              tapHintEl.classList.add('visible');
-              setStatus('tap screen to start camera');
-              appEl.style.borderColor = '#555';
-              state = 'live'; // allow touch handler to call play()
-            });
-        } else {
-          // Old WebView — play() returns undefined, assume it worked
-          initInProgress = false;
-          cameraReady    = true;
-          setState('live');
-        }
+        initInProgress = false;
+        cameraReady    = true;
+        setState('live');
       };
     })
     .catch(function(err) {
@@ -439,69 +367,55 @@
     });
   }
 
-  // ─── Tap-to-play — called when video is paused/blocked after init ─────────
-  function tryPlay() {
-    videoEl.play()
-      .then(function() {
-        cameraReady = true;
-        tapHintEl.classList.remove('visible');
-        setState('live');
-      })
-      .catch(function(err) {
-        console.error('play() still blocked:', err);
-        setStatus('tap screen to start camera');
-      });
-  }
-
   // ─── START button ─────────────────────────────────────────────────────────
-  function onStart() {
+  // touchstart used (not touchend/click) to call getUserMedia at the
+  // earliest possible moment within the gesture, minimising any delay.
+  btnStart.addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    splashEl.style.display = 'none';
+    state = 'live';
+    init(); // called synchronously inside the touch handler
+  }, { passive: false });
+
+  // click fallback for desktop
+  btnStart.addEventListener('click', function(e) {
+    e.stopPropagation();
     splashEl.style.display = 'none';
     state = 'live';
     init();
-  }
-
-  btnStart.addEventListener('click', onStart);
-  btnStart.addEventListener('touchstart', function(e) {
-    e.preventDefault();
-    onStart();
-  }, { passive: false });
+  });
 
   // ─── Hardware events ──────────────────────────────────────────────────────
   window.addEventListener('sideClick', function() {
-    if (state === 'splash')                          { onStart(); return; }
-    if (tapHintEl.classList.contains('visible'))     { tryPlay(); return; }
-    if (!cameraReady)                                { init();    return; }
+    if (state === 'splash') {
+      splashEl.style.display = 'none';
+      state = 'live';
+      init();
+      return;
+    }
+    if (!cameraReady) { init(); return; }
     shoot();
   });
+
   window.addEventListener('scrollDown', nextStyle);
   window.addEventListener('scrollUp',   prevStyle);
 
-  // ─── Touch / click events ─────────────────────────────────────────────────
+  // ─── Touch events ─────────────────────────────────────────────────────────
   document.body.addEventListener('touchstart', function(e) {
     e.preventDefault();
     var t = e.target;
-
-    // Splash — handled by btnStart listener
     if (t === splashEl || splashEl.contains(t)) return;
-
-    // Tap-to-play hint or video area while paused
-    if (tapHintEl.classList.contains('visible')) {
-      tryPlay();
-      return;
-    }
-
-    if (t === videoEl || t === tapHintEl) {
+    if (t === videoEl || t === previewEl) {
       if (!cameraReady) { init(); return; }
       shoot();
     }
-    if (t === previewEl)                               shoot();
     if (t.id === 'btn-reset' || t.closest('#btn-reset')) reset();
-    if (t.id === 'arr-up')                             prevStyle();
-    if (t.id === 'arr-down')                           nextStyle();
+    if (t.id === 'arr-up')   prevStyle();
+    if (t.id === 'arr-down') nextStyle();
   }, { passive: false });
 
   videoEl.addEventListener('click', function() {
-    if (tapHintEl.classList.contains('visible')) { tryPlay(); return; }
     if (!cameraReady) { init(); return; }
     shoot();
   });
@@ -564,7 +478,7 @@
 
   // ─── Reset ────────────────────────────────────────────────────────────────
   function reset() {
-    window.onPluginMessage = null;
+    window.onPluginMessage  = null;
     previewEl.style.display = 'none';
     setState('live');
   }
