@@ -1,28 +1,25 @@
 <!DOCTYPE html>
 <!--
   pixelart-cam — Rabbit R1 Creation
-  Captures a photo, sends it to the r1 pixelart bridge for AI style transformation.
-
-  IMPORTANT — how this bridge works:
-  - You send: message (style prompt) + pluginId:"com.r1.pixelart" + imageBase64
-  - Bridge responds with status:"processing" back to window.onPluginMessage
-  - The GENERATED IMAGE is delivered by rabbitOS to its own image viewer/gallery
-    — it does NOT come back to this WebView as base64 or any other format
-  - status:"complete" may or may not fire back into the WebView
-  - This Creation shows the captured freeze-frame as a "before" preview,
-    a spinner while processing, and a reset button. That is the full loop.
 
   FIX HISTORY:
-  v2 — added cameraReady flag; removed longPressStart listener
-  v3 — init() re-callable with initInProgress guard; sideClick retries init
-  v4 — splash screen with START button guarantees user gesture before getUserMedia
-  v5 — matched camera init pattern exactly to working ref.js:
-       · removed `muted` from <video> (interferes with stream attach on rabbitOS)
-       · replaced `await videoEl.play()` with onloadedmetadata callback — on
-         rabbitOS, play() as a promise can hang forever, stalling the whole
-         async init() at that line ("stuck on starting camera" symptom)
-       · switched getUserMedia constraints to use `ideal` for facingMode,
-         width, height — more permissive, matches what the working plugin uses
+  v2 — cameraReady flag; removed longPressStart
+  v3 — initInProgress guard; sideClick retries init
+  v4 — splash screen with START button for guaranteed user gesture
+  v5 — matched ref.js: no `muted`, onloadedmetadata callback, `ideal` constraints
+  v6 — THE ROOT FIX:
+       The video element is no longer hidden (display:none) at any point.
+       It sits behind the splash at z-index 0, fully rendered in the DOM from
+       page load. This keeps it in the browser's "visible" surface so that:
+         a) getUserMedia / srcObject attachment works without quirks
+         b) The tap on START falls through to the video layer, so the browser
+            sees the play() call as directly triggered by a touch on the video
+            itself — matching exactly how working plugins get past the autoplay
+            policy (the "Play symbol" the user sees is the browser waiting for
+            a tap on the video element specifically).
+       The splash sits on top (z-index 100) and is simply removed on START.
+       A "TAP TO PLAY" hint is shown over the video if it stalls after init,
+       and tapping anywhere on the video area calls videoEl.play() directly.
 -->
 <html lang="en">
 <head>
@@ -52,7 +49,58 @@
       transition: border-color 0.2s ease;
     }
 
-    /* ── Splash screen ── */
+    /* ── Video always present, never hidden ── */
+    /* It sits at z-index 0 behind everything.  */
+    /* The splash covers it; removing splash     */
+    /* reveals it without any display toggle.    */
+    #video {
+      position: absolute;
+      top: 0; left: 0;
+      width: 240px;
+      height: 240px;
+      object-fit: cover;
+      z-index: 0;
+      background: #000;
+    }
+
+    #preview {
+      position: absolute;
+      top: 0; left: 0;
+      width: 240px;
+      height: 240px;
+      object-fit: cover;
+      display: none;
+      z-index: 1;
+    }
+
+    /* ── Tap-to-play hint — shown if video stalls after init ── */
+    #tap-hint {
+      position: absolute;
+      top: 0; left: 0;
+      width: 240px;
+      height: 240px;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      z-index: 2;
+      background: rgba(0,0,0,0.5);
+    }
+
+    #tap-hint.visible { display: flex; }
+
+    #tap-hint span {
+      font-size: 32px;
+    }
+
+    #tap-hint p {
+      font-size: 9px;
+      color: #aaa;
+      text-align: center;
+    }
+
+    /* ── Splash screen — sits on top of everything ── */
     #splash {
       position: absolute;
       top: 0; left: 0;
@@ -100,18 +148,6 @@
 
     #btn-start:active { background: #ccc; }
 
-    /* ── Camera / preview layer ── */
-    /* NOTE: no `muted` on the video element — matches working ref.js pattern */
-    #video, #preview {
-      position: absolute;
-      top: 0; left: 0;
-      width: 240px;
-      height: 240px;
-      object-fit: cover;
-    }
-
-    #preview { display: none; }
-
     /* ── Style label strip ── */
     #style-strip {
       position: absolute;
@@ -122,6 +158,7 @@
       align-items: center;
       padding: 0 8px;
       pointer-events: none;
+      z-index: 3;
     }
 
     #style-name {
@@ -143,6 +180,7 @@
       align-items: center;
       justify-content: center;
       gap: 10px;
+      z-index: 3;
     }
 
     #overlay.visible { display: flex; }
@@ -175,6 +213,7 @@
       align-items: center;
       padding: 0 6px;
       gap: 6px;
+      z-index: 3;
     }
 
     #status {
@@ -215,23 +254,26 @@
 <body>
 <div id="app">
 
-  <!-- Splash — visible on load, dismissed only by tapping START -->
-  <div id="splash">
-    <div id="splash-title">✦ Pixelart Cam</div>
-    <div id="splash-sub">15 AI styles · scroll ▲▼ to pick<br>side button to shoot</div>
-    <button id="btn-start">START</button>
+  <!-- Video is ALWAYS in the DOM and never hidden.
+       The splash covers it. Removing the splash reveals it.
+       This ensures the browser treats it as a persistent visible surface
+       and that play() calls are accepted as user-gesture-triggered. -->
+  <video id="video" autoplay playsinline></video>
+
+  <img id="preview" alt="captured">
+
+  <!-- Tap-to-play hint overlay — shown if video is paused after init -->
+  <div id="tap-hint">
+    <span>▶</span>
+    <p>tap to start camera</p>
   </div>
 
-  <!-- Camera / preview — no `muted` to match working ref.js -->
-  <video id="video" autoplay playsinline style="display:none"></video>
-  <img   id="preview" alt="captured">
-
-  <!-- Style name overlay -->
+  <!-- Style name -->
   <div id="style-strip">
     <span id="style-name">SIMPSONS</span>
   </div>
 
-  <!-- Processing spinner overlay -->
+  <!-- Processing overlay -->
   <div id="overlay">
     <div class="spinner"></div>
     <div id="overlay-text">Sending to r1…</div>
@@ -245,12 +287,17 @@
     <button id="btn-reset">↺ retake</button>
   </div>
 
+  <!-- Splash sits on top — removed on START tap -->
+  <div id="splash">
+    <div id="splash-title">✦ Pixelart Cam</div>
+    <div id="splash-sub">15 AI styles · scroll ▲▼ to pick<br>side button to shoot</div>
+    <button id="btn-start">START</button>
+  </div>
+
 </div>
 <script>
-  // ─── R1 detection ─────────────────────────────────────────────────────────
   const isR1 = typeof PluginMessageHandler !== 'undefined';
 
-  // ─── Style list ───────────────────────────────────────────────────────────
   const STYLES = [
     { name: 'SIMPSONS',    prompt: 'Take a picture in the style of a Simpsons cartoon.' },
     { name: 'GHIBLI',      prompt: 'Take a picture in the Studio Ghibli anime style — soft colors, whimsical atmosphere, and hand-drawn aesthetic.' },
@@ -269,42 +316,39 @@
     { name: 'PERFECT',     prompt: 'Take a picture and make it picture perfect — improve lighting, colors, and overall composition. Make it photorealistic. 8k resolution.' },
   ];
 
-  let styleIndex = 0;
-
-  // ─── State ────────────────────────────────────────────────────────────────
+  let styleIndex     = 0;
   let state          = 'splash';
   let cameraReady    = false;
   let initInProgress = false;
 
-  // ─── DOM refs ─────────────────────────────────────────────────────────────
   const appEl       = document.getElementById('app');
   const splashEl    = document.getElementById('splash');
   const splashSub   = document.getElementById('splash-sub');
   const btnStart    = document.getElementById('btn-start');
   const videoEl     = document.getElementById('video');
   const previewEl   = document.getElementById('preview');
+  const tapHintEl   = document.getElementById('tap-hint');
   const overlayEl   = document.getElementById('overlay');
   const overlayText = document.getElementById('overlay-text');
   const styleNameEl = document.getElementById('style-name');
   const statusEl    = document.getElementById('status');
   const btnReset    = document.getElementById('btn-reset');
 
-  // ─── UI helpers ───────────────────────────────────────────────────────────
   function setState(s) {
     state = s;
     switch (s) {
       case 'live':
         splashEl.style.display  = 'none';
-        videoEl.style.display   = 'block';
         previewEl.style.display = 'none';
+        tapHintEl.classList.remove('visible');
         overlayEl.classList.remove('visible');
         btnReset.classList.remove('visible');
         appEl.style.borderColor = '#222';
         setStatus('▲▼ change style · side btn shoot');
         break;
       case 'sending':
-        videoEl.style.display   = 'none';
         previewEl.style.display = 'block';
+        tapHintEl.classList.remove('visible');
         overlayEl.classList.add('visible');
         overlayText.textContent = 'Sending to r1…';
         btnReset.classList.remove('visible');
@@ -330,55 +374,89 @@
     }
   }
 
-  function setStatus(msg) { statusEl.textContent = msg; }
-  function updateStyleLabel() { styleNameEl.textContent = STYLES[styleIndex].name; }
+  function setStatus(msg)      { statusEl.textContent = msg; }
+  function updateStyleLabel()  { styleNameEl.textContent = STYLES[styleIndex].name; }
 
   // ─── Init camera ──────────────────────────────────────────────────────────
-  // v5: mirrors ref.js exactly —
-  //   · `ideal` constraints (not exact strings) for facingMode/width/height
-  //   · onloadedmetadata callback instead of awaiting play() — on rabbitOS,
-  //     play() as a Promise can hang forever, stalling async init() permanently
+  // Uses .then()/.catch() — no async/await — to avoid any Promise stall on
+  // rabbitOS. play() is called inside onloadedmetadata, not awaited.
   function init() {
     if (cameraReady || initInProgress) return;
     initInProgress = true;
     setStatus('starting camera…');
 
-    const constraints = {
+    navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: 'environment' },
         width:      { ideal: 640 },
         height:     { ideal: 480 }
       }
-    };
+    })
+    .then(function(stream) {
+      videoEl.srcObject = stream;
 
-    navigator.mediaDevices.getUserMedia(constraints)
-      .then(function(stream) {
-        videoEl.srcObject = stream;
-        videoEl.onloadedmetadata = function() {
-          // v5: call play() in the callback, do NOT await it as a Promise
-          videoEl.play();
+      videoEl.onloadedmetadata = function() {
+        // Call play() directly here — this callback is the closest we can
+        // get to a synchronous user-gesture chain on rabbitOS.
+        // If play() is still blocked, the browser shows its native Play symbol;
+        // the tap-hint overlay will prompt the user to tap to unblock it.
+        var playResult = videoEl.play();
+
+        if (playResult !== undefined) {
+          playResult
+            .then(function() {
+              // play() succeeded
+              initInProgress = false;
+              cameraReady    = true;
+              setState('live');
+            })
+            .catch(function() {
+              // play() was blocked — show tap-to-play hint
+              initInProgress = false;
+              splashEl.style.display = 'none';
+              tapHintEl.classList.add('visible');
+              setStatus('tap screen to start camera');
+              appEl.style.borderColor = '#555';
+              state = 'live'; // allow touch handler to call play()
+            });
+        } else {
+          // Old WebView — play() returns undefined, assume it worked
           initInProgress = false;
           cameraReady    = true;
           setState('live');
-        };
+        }
+      };
+    })
+    .catch(function(err) {
+      initInProgress = false;
+      console.error('Camera error:', err);
+      splashEl.style.display = 'flex';
+      splashSub.textContent  = 'Camera error — tap START to retry';
+      splashSub.style.color  = '#c44';
+      setStatus('camera error · tap START');
+      appEl.style.borderColor = '#662222';
+      state = 'splash';
+    });
+  }
+
+  // ─── Tap-to-play — called when video is paused/blocked after init ─────────
+  function tryPlay() {
+    videoEl.play()
+      .then(function() {
+        cameraReady = true;
+        tapHintEl.classList.remove('visible');
+        setState('live');
       })
       .catch(function(err) {
-        initInProgress = false;
-        console.error('Camera error:', err);
-        // Restore splash so user can tap START to retry
-        splashEl.style.display = 'flex';
-        splashSub.textContent  = 'Camera error — tap START to retry';
-        splashSub.style.color  = '#c44';
-        setStatus('camera error · tap START');
-        appEl.style.borderColor = '#662222';
-        state = 'splash';
+        console.error('play() still blocked:', err);
+        setStatus('tap screen to start camera');
       });
   }
 
-  // ─── START button — guaranteed user gesture entry point ───────────────────
+  // ─── START button ─────────────────────────────────────────────────────────
   function onStart() {
     splashEl.style.display = 'none';
-    state = 'live'; // set before init() so the guard doesn't bail
+    state = 'live';
     init();
   }
 
@@ -390,29 +468,40 @@
 
   // ─── Hardware events ──────────────────────────────────────────────────────
   window.addEventListener('sideClick', function() {
-    if (state === 'splash') { onStart(); return; }
-    if (!cameraReady)       { init();    return; }
+    if (state === 'splash')                          { onStart(); return; }
+    if (tapHintEl.classList.contains('visible'))     { tryPlay(); return; }
+    if (!cameraReady)                                { init();    return; }
     shoot();
   });
   window.addEventListener('scrollDown', nextStyle);
   window.addEventListener('scrollUp',   prevStyle);
 
-  // ─── Touch events ─────────────────────────────────────────────────────────
+  // ─── Touch / click events ─────────────────────────────────────────────────
   document.body.addEventListener('touchstart', function(e) {
     e.preventDefault();
     var t = e.target;
-    if (t === splashEl || splashEl.contains(t)) return; // handled above
-    if (t === videoEl || t === previewEl) {
+
+    // Splash — handled by btnStart listener
+    if (t === splashEl || splashEl.contains(t)) return;
+
+    // Tap-to-play hint or video area while paused
+    if (tapHintEl.classList.contains('visible')) {
+      tryPlay();
+      return;
+    }
+
+    if (t === videoEl || t === tapHintEl) {
       if (!cameraReady) { init(); return; }
       shoot();
     }
+    if (t === previewEl)                               shoot();
     if (t.id === 'btn-reset' || t.closest('#btn-reset')) reset();
-    if (t.id === 'arr-up')   prevStyle();
-    if (t.id === 'arr-down') nextStyle();
+    if (t.id === 'arr-up')                             prevStyle();
+    if (t.id === 'arr-down')                           nextStyle();
   }, { passive: false });
 
-  // Desktop click fallbacks
   videoEl.addEventListener('click', function() {
+    if (tapHintEl.classList.contains('visible')) { tryPlay(); return; }
     if (!cameraReady) { init(); return; }
     shoot();
   });
@@ -461,7 +550,6 @@
         imageBase64: dataUri
       }));
     } else {
-      // Desktop simulation
       setTimeout(function() { window.onPluginMessage({ status: 'processing' }); }, 600);
       setTimeout(function() { window.onPluginMessage({ status: 'complete'   }); }, 3000);
     }
@@ -474,9 +562,10 @@
     }, 15000);
   }
 
-  // ─── Reset to live camera ─────────────────────────────────────────────────
+  // ─── Reset ────────────────────────────────────────────────────────────────
   function reset() {
     window.onPluginMessage = null;
+    previewEl.style.display = 'none';
     setState('live');
   }
 
@@ -493,7 +582,7 @@
     updateStyleLabel();
   }
 
-  // ─── Boot — nothing camera-related ────────────────────────────────────────
+  // ─── Boot ─────────────────────────────────────────────────────────────────
   updateStyleLabel();
 </script>
 </body>
