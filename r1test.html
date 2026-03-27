@@ -8,15 +8,16 @@
   v4 — splash screen with START button for guaranteed user gesture
   v5 — matched ref.js: no `muted`, onloadedmetadata callback, `ideal` constraints
   v6 — video never hidden; tap-to-play fallback overlay
-  v7 — THE SPEED FIX:
-       Removed ALL explicit videoEl.play() calls. The `autoplay` attribute
-       on the <video> element handles playback automatically the moment
-       srcObject is assigned — no Promise, no gesture gate, no waiting.
-       getUserMedia is now called SYNCHRONOUSLY inside the touchstart/click
-       handler on the START button (not via a setTimeout or deferred function),
-       keeping the tightest possible user-gesture → getUserMedia chain.
-       onloadedmetadata fires and the camera appears immediately, matching
-       the behaviour of working plugins.
+  v7 — WRONG: removed play() entirely; autoplay alone not enough on rabbitOS
+  v8 — THE CORRECT FIX:
+       getUserMedia is called immediately on DOMContentLoaded (like ref.js),
+       so the stream is ready and waiting before the user even sees the splash.
+       The START button's sole job is to call videoEl.play() synchronously
+       inside the touchstart handler — that one call is all that needs a user
+       gesture on rabbitOS. Stream setup and play() are now decoupled:
+         · stream setup: happens in background on page load (no gesture needed)
+         · play(): happens instantly on START tap (gesture-gated, but instant)
+       This matches ref.js behaviour exactly and eliminates the wait.
 -->
 <html lang="en">
 <head>
@@ -46,7 +47,7 @@
       transition: border-color 0.2s ease;
     }
 
-    /* Video always in DOM, never hidden, autoplay handles playback */
+    /* Video always in DOM, never hidden */
     #video {
       position: absolute;
       top: 0; left: 0;
@@ -221,9 +222,8 @@
 <body>
 <div id="app">
 
-  <!-- Video is always present. autoplay fires the moment srcObject is set.
-       No play() call is ever needed or made. -->
-  <video id="video" autoplay playsinline></video>
+  <!-- Video always present. play() is called from the START gesture. -->
+  <video id="video" playsinline></video>
 
   <img id="preview" alt="captured">
 
@@ -243,7 +243,7 @@
     <button id="btn-reset">↺ retake</button>
   </div>
 
-  <!-- Splash on top — removed the instant user taps START -->
+  <!-- Splash on top — removed when user taps START -->
   <div id="splash">
     <div id="splash-title">✦ Pixelart Cam</div>
     <div id="splash-sub">15 AI styles · scroll ▲▼ to pick<br>side button to shoot</div>
@@ -272,10 +272,10 @@
     { name: 'PERFECT',     prompt: 'Take a picture and make it picture perfect — improve lighting, colors, and overall composition. Make it photorealistic. 8k resolution.' },
   ];
 
-  let styleIndex     = 0;
-  let state          = 'splash';
-  let cameraReady    = false;
-  let initInProgress = false;
+  let styleIndex  = 0;
+  let state       = 'splash';
+  let cameraReady = false;
+  let streamReady = false; // stream is attached, waiting for play() gesture
 
   const appEl       = document.getElementById('app');
   const splashEl    = document.getElementById('splash');
@@ -330,16 +330,12 @@
   function setStatus(msg)     { statusEl.textContent = msg; }
   function updateStyleLabel() { styleNameEl.textContent = STYLES[styleIndex].name; }
 
-  // ─── Init camera ──────────────────────────────────────────────────────────
-  // v7: NO play() call anywhere. `autoplay` on the element handles it the
-  // moment srcObject is assigned. getUserMedia is called directly — this
-  // function should be invoked synchronously from within a touch/click handler
-  // to keep the tightest possible user-gesture chain.
-  function init() {
-    if (cameraReady || initInProgress) return;
-    initInProgress = true;
-    setStatus('starting camera…');
-
+  // ─── Step 1: getUserMedia on page load ────────────────────────────────────
+  // Called immediately from DOMContentLoaded — no gesture needed for this
+  // part. Stream setup runs in the background while the splash is visible.
+  // By the time the user reads the splash and taps START, the stream is
+  // already attached and waiting. Only play() needs the gesture.
+  function setupStream() {
     navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: 'environment' },
@@ -348,53 +344,66 @@
       }
     })
     .then(function(stream) {
-      videoEl.srcObject = stream; // autoplay fires here automatically
+      videoEl.srcObject = stream;
       videoEl.onloadedmetadata = function() {
-        initInProgress = false;
-        cameraReady    = true;
-        setState('live');
+        streamReady = true;
+        // Update splash sub-text so user knows we're ready
+        if (state === 'splash') {
+          splashSub.textContent = 'Camera ready · tap START';
+          splashSub.style.color = '#6a6';
+        }
       };
     })
     .catch(function(err) {
-      initInProgress = false;
       console.error('Camera error:', err);
-      splashEl.style.display = 'flex';
-      splashSub.textContent  = 'Camera error — tap START to retry';
-      splashSub.style.color  = '#c44';
-      setStatus('camera error · tap START');
-      appEl.style.borderColor = '#662222';
-      state = 'splash';
+      splashSub.textContent = 'Camera error — tap START to retry';
+      splashSub.style.color = '#c44';
+      setStatus('camera error');
     });
   }
 
+  // ─── Step 2: play() called synchronously inside the START touch handler ───
+  // This is the only gesture-gated operation. Because the stream is already
+  // attached, play() starts the viewfinder instantly with no wait.
+  function startPlay() {
+    splashEl.style.display = 'none';
+    state = 'live';
+
+    if (!streamReady) {
+      // Stream not ready yet (very fast tap) — wait for it then play
+      setStatus('waiting for camera…');
+      videoEl.onloadedmetadata = function() {
+        streamReady = true;
+        videoEl.play();
+        cameraReady = true;
+        setState('live');
+      };
+      // Also try playing now in case metadata already loaded silently
+      videoEl.play();
+      return;
+    }
+
+    videoEl.play();
+    cameraReady = true;
+    setState('live');
+  }
+
   // ─── START button ─────────────────────────────────────────────────────────
-  // touchstart used (not touchend/click) to call getUserMedia at the
-  // earliest possible moment within the gesture, minimising any delay.
   btnStart.addEventListener('touchstart', function(e) {
     e.preventDefault();
     e.stopPropagation();
-    splashEl.style.display = 'none';
-    state = 'live';
-    init(); // called synchronously inside the touch handler
+    startPlay();
   }, { passive: false });
 
-  // click fallback for desktop
   btnStart.addEventListener('click', function(e) {
     e.stopPropagation();
-    splashEl.style.display = 'none';
-    state = 'live';
-    init();
+    startPlay();
   });
 
   // ─── Hardware events ──────────────────────────────────────────────────────
   window.addEventListener('sideClick', function() {
-    if (state === 'splash') {
-      splashEl.style.display = 'none';
-      state = 'live';
-      init();
-      return;
-    }
-    if (!cameraReady) { init(); return; }
+    if (state === 'splash') { startPlay(); return; }
+    if (!cameraReady)       { videoEl.play(); return; }
     shoot();
   });
 
@@ -407,7 +416,7 @@
     var t = e.target;
     if (t === splashEl || splashEl.contains(t)) return;
     if (t === videoEl || t === previewEl) {
-      if (!cameraReady) { init(); return; }
+      if (!cameraReady) { videoEl.play(); return; }
       shoot();
     }
     if (t.id === 'btn-reset' || t.closest('#btn-reset')) reset();
@@ -416,7 +425,7 @@
   }, { passive: false });
 
   videoEl.addEventListener('click', function() {
-    if (!cameraReady) { init(); return; }
+    if (!cameraReady) { videoEl.play(); return; }
     shoot();
   });
   btnReset.addEventListener('click', reset);
@@ -498,6 +507,15 @@
 
   // ─── Boot ─────────────────────────────────────────────────────────────────
   updateStyleLabel();
+
+  document.addEventListener('DOMContentLoaded', function() {
+    setupStream(); // start getUserMedia immediately — no gesture needed
+  });
+
+  // If DOMContentLoaded already fired (script at end of body), run now
+  if (document.readyState === 'interactive' || document.readyState === 'complete') {
+    setupStream();
+  }
 </script>
 </body>
 </html>
