@@ -272,7 +272,7 @@
 
   var STORAGE_KEY = 'r1_scanner_hits';
   var PROBE_MSG   = 'ping'; // minimal probe message
-  var PROBE_WAIT  = 1200;   // ms to wait for a response per plugin
+  var PROBE_WAIT  = 10000;   // ms to wait for a response per plugin
   var BATCH_SIZE  = 1;      // probe one at a time to avoid flooding
 
   var isR1        = typeof PluginMessageHandler !== 'undefined';
