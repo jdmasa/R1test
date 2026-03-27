@@ -1,17 +1,9 @@
 <!DOCTYPE html>
 <!--
-  pixelart-cam — Rabbit R1 Creation
-
-  v12 — key insight from diagnostics:
-  · The native browser "Play" button is a browser UI element, not a DOM node.
-    Our body touchstart handler was calling e.preventDefault() which killed
-    the native tap before the browser could act on it — so tapping did nothing.
-  · On rabbitOS, sideClick is the reliable user gesture that unblocks play().
-  · Fix: sideClick ALWAYS calls videoEl.play() as its very first action.
-    If the camera isn't playing yet, this unblocks it. If it's already
-    playing, play() on an already-playing video is a safe no-op.
-  · body touchstart no longer calls e.preventDefault() globally — native
-    browser UI (Play button) can now respond to taps normally.
+  pixelart-cam — Rabbit R1 Creation  v13
+  Added camera flip (front/rear) button in the top-right of the viewfinder.
+  Flip stops the current stream, calls getUserMedia with the opposite
+  facingMode, and restarts — following the same safe init pattern as v12.
 -->
 <html lang="en">
 <head>
@@ -58,25 +50,58 @@
       z-index: 1;
     }
 
+    /* ── Style label strip (top bar over video) ── */
     #style-strip {
       position: absolute;
       top: 0; left: 0; right: 0;
-      height: 22px;
-      background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+      height: 28px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.75), transparent);
       display: flex;
       align-items: center;
       padding: 0 8px;
-      pointer-events: none;
       z-index: 3;
     }
 
     #style-name {
+      flex: 1;
       font-size: 10px;
       color: #fff;
       letter-spacing: 0.05em;
       text-transform: uppercase;
+      pointer-events: none;
     }
 
+    /* ── Flip camera button — top-right of viewfinder ── */
+    #btn-flip {
+      width: 26px;
+      height: 22px;
+      background: rgba(255,255,255,0.12);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 3px;
+      color: #fff;
+      font-size: 13px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      /* Hidden while camera is not live or during flip */
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+
+    #btn-flip.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    #btn-flip:active {
+      background: rgba(255,255,255,0.25);
+    }
+
+    /* ── Processing overlay ── */
     #overlay {
       position: absolute;
       top: 0; left: 0;
@@ -110,6 +135,7 @@
       text-align: center;
     }
 
+    /* ── Bottom bar ── */
     #bar {
       position: absolute;
       bottom: 0; left: 0; right: 0;
@@ -164,8 +190,10 @@
   <video id="video" playsinline></video>
   <img   id="preview" alt="captured">
 
+  <!-- Top strip: style name left, flip button right -->
   <div id="style-strip">
     <span id="style-name">SIMPSONS</span>
+    <button id="btn-flip">⇄</button>
   </div>
 
   <div id="overlay">
@@ -205,6 +233,8 @@
   var styleIndex  = 0;
   var state       = 'live';
   var cameraReady = false;
+  var facingMode  = 'environment'; // current camera facing — 'environment' or 'user'
+  var flipping    = false;         // guard against double-tapping flip
 
   var appEl       = document.getElementById('app');
   var videoEl     = document.getElementById('video');
@@ -214,15 +244,28 @@
   var styleNameEl = document.getElementById('style-name');
   var statusEl    = document.getElementById('status');
   var btnReset    = document.getElementById('btn-reset');
+  var btnFlip     = document.getElementById('btn-flip');
 
   function setStatus(msg)     { statusEl.textContent = msg; }
   function updateStyleLabel() { styleNameEl.textContent = STYLES[styleIndex].name; }
 
-  // ── Camera init ───────────────────────────────────────────────────────────
-  function initCamera() {
+  // ── Stop current stream tracks ────────────────────────────────────────────
+  function stopStream() {
+    if (videoEl.srcObject) {
+      videoEl.srcObject.getTracks().forEach(function(t) { t.stop(); });
+      videoEl.srcObject = null;
+    }
+  }
+
+  // ── Start camera with given facingMode ────────────────────────────────────
+  function startCamera(facing) {
+    cameraReady = false;
+    btnFlip.classList.remove('visible');
+    setStatus('switching camera…');
+
     navigator.mediaDevices.getUserMedia({
       video: {
-        facingMode: { ideal: 'environment' },
+        facingMode: { ideal: facing },
         width:      { ideal: 640 },
         height:     { ideal: 480 }
       }
@@ -230,13 +273,11 @@
     .then(function(stream) {
       videoEl.srcObject = stream;
       videoEl.onloadedmetadata = function() {
-        // Attempt play — may need user gesture on rabbitOS
         var p = videoEl.play();
         if (p !== undefined) {
           p.then(function() {
             onCameraLive();
           }).catch(function() {
-            // Blocked — status bar tells user to press side button
             setStatus('press side button to start');
           });
         } else {
@@ -246,22 +287,46 @@
     })
     .catch(function(err) {
       setStatus('camera error: ' + err.message);
+      flipping = false;
     });
+  }
+
+  // ── Init camera on load ───────────────────────────────────────────────────
+  function initCamera() {
+    startCamera(facingMode);
   }
 
   function onCameraLive() {
     cameraReady = true;
+    flipping    = false;
+    btnFlip.classList.add('visible');
     setStatus('▲▼ change style · side btn shoot');
   }
 
-  // ── sideClick: ALWAYS tries play() first, then shoots if already live ─────
-  // This is the key fix: on rabbitOS, sideClick is a trusted user gesture.
-  // Calling play() here unblocks the video if it's paused, and is a safe
-  // no-op if the video is already playing. So the first sideClick starts
-  // the camera; subsequent ones shoot.
+  // ── Flip camera ───────────────────────────────────────────────────────────
+  function flipCamera() {
+    if (!cameraReady || state !== 'live' || flipping) return;
+    flipping   = true;
+    facingMode = (facingMode === 'environment') ? 'user' : 'environment';
+    stopStream();
+    startCamera(facingMode);
+  }
+
+  // ── Flip button events ────────────────────────────────────────────────────
+  btnFlip.addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    flipCamera();
+  }, { passive: false });
+
+  btnFlip.addEventListener('click', function(e) {
+    e.stopPropagation();
+    flipCamera();
+  });
+
+  // ── sideClick ─────────────────────────────────────────────────────────────
   window.addEventListener('sideClick', function() {
     if (!cameraReady) {
-      // Try to unblock play with this gesture
       videoEl.play().then(function() {
         onCameraLive();
       }).catch(function() {
@@ -275,13 +340,9 @@
   window.addEventListener('scrollDown', nextStyle);
   window.addEventListener('scrollUp',   prevStyle);
 
-  // ── Touch events — NO e.preventDefault() globally ─────────────────────────
-  // Removed global preventDefault so the browser's native Play button on the
-  // video element can respond to taps without being intercepted.
-  // Only call preventDefault on specific interactive elements we own.
+  // ── Touch events ──────────────────────────────────────────────────────────
   videoEl.addEventListener('touchstart', function(e) {
     if (!cameraReady) {
-      // Let the native play button work AND try our play() call
       videoEl.play().then(onCameraLive).catch(function() {});
       return;
     }
@@ -332,6 +393,7 @@
     overlayEl.classList.add('visible');
     overlayText.textContent = 'Sending to r1…';
     btnReset.classList.remove('visible');
+    btnFlip.classList.remove('visible');
     appEl.style.borderColor = '#884400';
     setStatus('sending…');
 
@@ -392,6 +454,7 @@
     previewEl.style.display = 'none';
     overlayEl.classList.remove('visible');
     btnReset.classList.remove('visible');
+    btnFlip.classList.add('visible');
     appEl.style.borderColor = '#222';
     setStatus('▲▼ change style · side btn shoot');
     state = 'live';
