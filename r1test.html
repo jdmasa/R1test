@@ -2,18 +2,22 @@
 <!--
   pixelart-cam — Rabbit R1 Creation
 
-  v11 — back to basics, matching ref.js startup exactly:
-  · DOMContentLoaded fires getUserMedia immediately (no splash delay)
-  · srcObject assigned, play() called inside onloadedmetadata
-  · If play() is blocked, a minimal "tap to start" overlay appears on the
-    video itself — tapping it calls play() directly as a user gesture
-  · All the cameraReady / splash / flag complexity removed
+  v12 — key insight from diagnostics:
+  · The native browser "Play" button is a browser UI element, not a DOM node.
+    Our body touchstart handler was calling e.preventDefault() which killed
+    the native tap before the browser could act on it — so tapping did nothing.
+  · On rabbitOS, sideClick is the reliable user gesture that unblocks play().
+  · Fix: sideClick ALWAYS calls videoEl.play() as its very first action.
+    If the camera isn't playing yet, this unblocks it. If it's already
+    playing, play() on an already-playing video is a safe no-op.
+  · body touchstart no longer calls e.preventDefault() globally — native
+    browser UI (Play button) can now respond to taps normally.
 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Pixelart Cam v11</title>
+  <title>Pixelart Cam</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -54,35 +58,6 @@
       z-index: 1;
     }
 
-    /* Tap-to-start overlay — shown only if play() is blocked by browser */
-    #tap-start {
-      position: absolute;
-      top: 0; left: 0;
-      width: 240px;
-      height: 240px;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 5;
-      cursor: pointer;
-    }
-
-    #tap-start.visible {
-      display: flex;
-    }
-
-    #tap-start-label {
-      background: rgba(0,0,0,0.6);
-      color: #fff;
-      font-size: 11px;
-      padding: 8px 14px;
-      border-radius: 4px;
-      border: 1px solid #555;
-      text-align: center;
-      pointer-events: none;
-    }
-
-    /* Style label */
     #style-strip {
       position: absolute;
       top: 0; left: 0; right: 0;
@@ -102,7 +77,6 @@
       text-transform: uppercase;
     }
 
-    /* Processing overlay */
     #overlay {
       position: absolute;
       top: 0; left: 0;
@@ -114,7 +88,7 @@
       align-items: center;
       justify-content: center;
       gap: 10px;
-      z-index: 4;
+      z-index: 3;
     }
 
     #overlay.visible { display: flex; }
@@ -136,7 +110,6 @@
       text-align: center;
     }
 
-    /* Bottom bar */
     #bar {
       position: absolute;
       bottom: 0; left: 0; right: 0;
@@ -191,11 +164,6 @@
   <video id="video" playsinline></video>
   <img   id="preview" alt="captured">
 
-  <!-- Only shown if browser blocks autoplay -->
-  <div id="tap-start">
-    <div id="tap-start-label">▶ tap to start camera</div>
-  </div>
-
   <div id="style-strip">
     <span id="style-name">SIMPSONS</span>
   </div>
@@ -207,7 +175,7 @@
 
   <div id="bar">
     <span id="arr-up">▲</span>
-    <span id="status">initializing…</span>
+    <span id="status">press side button to start</span>
     <span id="arr-down">▼</span>
     <button id="btn-reset">↺ retake</button>
   </div>
@@ -241,7 +209,6 @@
   var appEl       = document.getElementById('app');
   var videoEl     = document.getElementById('video');
   var previewEl   = document.getElementById('preview');
-  var tapStartEl  = document.getElementById('tap-start');
   var overlayEl   = document.getElementById('overlay');
   var overlayText = document.getElementById('overlay-text');
   var styleNameEl = document.getElementById('style-name');
@@ -251,9 +218,8 @@
   function setStatus(msg)     { statusEl.textContent = msg; }
   function updateStyleLabel() { styleNameEl.textContent = STYLES[styleIndex].name; }
 
-  // ── Camera init — mirrors ref.js exactly ─────────────────────────────────
+  // ── Camera init ───────────────────────────────────────────────────────────
   function initCamera() {
-    setStatus('starting camera…');
     navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: 'environment' },
@@ -264,69 +230,86 @@
     .then(function(stream) {
       videoEl.srcObject = stream;
       videoEl.onloadedmetadata = function() {
+        // Attempt play — may need user gesture on rabbitOS
         var p = videoEl.play();
         if (p !== undefined) {
           p.then(function() {
-            cameraReady = true;
-            tapStartEl.classList.remove('visible');
-            setStatus('▲▼ change style · side btn shoot');
+            onCameraLive();
           }).catch(function() {
-            // play() blocked — show tap overlay, let user unblock it
-            tapStartEl.classList.add('visible');
-            setStatus('tap screen to start camera');
+            // Blocked — status bar tells user to press side button
+            setStatus('press side button to start');
           });
         } else {
-          // Old WebView — play() returns undefined, assume success
-          cameraReady = true;
-          setStatus('▲▼ change style · side btn shoot');
+          onCameraLive();
         }
       };
     })
     .catch(function(err) {
       setStatus('camera error: ' + err.message);
-      appEl.style.borderColor = '#662222';
     });
   }
 
-  // ── Tap-to-start overlay handler ─────────────────────────────────────────
-  function tapToStart() {
-    tapStartEl.classList.remove('visible');
-    videoEl.play().then(function() {
-      cameraReady = true;
-      setStatus('▲▼ change style · side btn shoot');
-    }).catch(function() {
-      tapStartEl.classList.add('visible');
-    });
+  function onCameraLive() {
+    cameraReady = true;
+    setStatus('▲▼ change style · side btn shoot');
   }
 
-  tapStartEl.addEventListener('touchstart', function(e) {
-    e.preventDefault();
-    tapToStart();
-  }, { passive: false });
-
-  tapStartEl.addEventListener('click', tapToStart);
-
-  // ── Hardware events ───────────────────────────────────────────────────────
+  // ── sideClick: ALWAYS tries play() first, then shoots if already live ─────
+  // This is the key fix: on rabbitOS, sideClick is a trusted user gesture.
+  // Calling play() here unblocks the video if it's paused, and is a safe
+  // no-op if the video is already playing. So the first sideClick starts
+  // the camera; subsequent ones shoot.
   window.addEventListener('sideClick', function() {
-    if (tapStartEl.classList.contains('visible')) { tapToStart(); return; }
-    if (!cameraReady) return;
+    if (!cameraReady) {
+      // Try to unblock play with this gesture
+      videoEl.play().then(function() {
+        onCameraLive();
+      }).catch(function() {
+        setStatus('press side button to start');
+      });
+      return;
+    }
     shoot();
   });
+
   window.addEventListener('scrollDown', nextStyle);
   window.addEventListener('scrollUp',   prevStyle);
 
-  // ── Touch events ──────────────────────────────────────────────────────────
-  document.body.addEventListener('touchstart', function(e) {
+  // ── Touch events — NO e.preventDefault() globally ─────────────────────────
+  // Removed global preventDefault so the browser's native Play button on the
+  // video element can respond to taps without being intercepted.
+  // Only call preventDefault on specific interactive elements we own.
+  videoEl.addEventListener('touchstart', function(e) {
+    if (!cameraReady) {
+      // Let the native play button work AND try our play() call
+      videoEl.play().then(onCameraLive).catch(function() {});
+      return;
+    }
     e.preventDefault();
-    var t = e.target;
-    if (t === tapStartEl || tapStartEl.contains(t)) { tapToStart(); return; }
-    if (t === videoEl)    { if (cameraReady) shoot(); return; }
-    if (t === previewEl)  { if (cameraReady) shoot(); return; }
-    if (t.id === 'btn-reset' || t.closest('#btn-reset')) reset();
-    if (t.id === 'arr-up')   prevStyle();
-    if (t.id === 'arr-down') nextStyle();
+    shoot();
   }, { passive: false });
 
+  previewEl.addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    if (cameraReady) shoot();
+  }, { passive: false });
+
+  btnReset.addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    reset();
+  }, { passive: false });
+
+  document.getElementById('arr-up').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    prevStyle();
+  }, { passive: false });
+
+  document.getElementById('arr-down').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    nextStyle();
+  }, { passive: false });
+
+  // Desktop click fallbacks
   videoEl.addEventListener('click',   function() { if (cameraReady) shoot(); });
   btnReset.addEventListener('click',  reset);
   document.getElementById('arr-up').addEventListener('click',   prevStyle);
@@ -427,7 +410,7 @@
     updateStyleLabel();
   }
 
-  // ── Boot — matches ref.js: init on DOMContentLoaded ──────────────────────
+  // ── Boot ──────────────────────────────────────────────────────────────────
   updateStyleLabel();
   document.addEventListener('DOMContentLoaded', initCamera);
   if (document.readyState !== 'loading') initCamera();
