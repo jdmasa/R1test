@@ -4,22 +4,17 @@
 
   FIX HISTORY:
   v2–v8 — various attempts at gesture/init ordering
-  v9 — THE CORRECT FIX, confirmed by diagnostic:
-       The problem was always that play() was being called before srcObject
-       was set (getUserMedia is async — srcObject isn't assigned until the
-       Promise resolves, which is after any synchronous play() call).
-
-       The solution uses a two-flag handshake:
-         · `userGestured` — set to true the moment START is tapped
-         · `streamReady`  — set to true inside onloadedmetadata
-
-       play() is called inside onloadedmetadata, which checks `userGestured`.
-       Because getUserMedia runs in the background during the splash, by the
-       time the user taps START both flags are true and play() fires instantly
-       from within the stream-ready callback. No waiting, no polling.
-
-       Confirmed working sequence from diagnostic:
-         getUserMedia → srcObject set → onloadedmetadata → play() → playing
+  v9 — two-flag handshake: getUserMedia on load, play() after both
+       userGestured + streamReady flags are true. Confirmed working.
+  v10 — UX fix for remaining delay:
+       The camera itself is fast. The perceived wait was the user tapping
+       START before onloadedmetadata had fired, causing a "starting camera…"
+       pause while the stream caught up.
+       Fix: START button starts DISABLED (dimmed, "preparing…"). When
+       onloadedmetadata fires, the button lights up white and reads "START".
+       Tapping it now always means the stream is ready, so play() resolves
+       instantly with zero wait. The user sees a clear signal and taps at
+       exactly the right moment.
 -->
 <html lang="en">
 <head>
@@ -49,7 +44,6 @@
       transition: border-color 0.2s ease;
     }
 
-    /* Video always in DOM, never hidden */
     #video {
       position: absolute;
       top: 0; left: 0;
@@ -70,7 +64,6 @@
       z-index: 1;
     }
 
-    /* ── Style label strip ── */
     #style-strip {
       position: absolute;
       top: 0; left: 0; right: 0;
@@ -90,7 +83,6 @@
       text-transform: uppercase;
     }
 
-    /* ── Processing overlay ── */
     #overlay {
       position: absolute;
       top: 0; left: 0;
@@ -124,7 +116,6 @@
       text-align: center;
     }
 
-    /* ── Bottom bar ── */
     #bar {
       position: absolute;
       bottom: 0; left: 0; right: 0;
@@ -172,7 +163,7 @@
 
     #btn-reset.visible { display: block; }
 
-    /* ── Splash — on top of everything ── */
+    /* ── Splash ── */
     #splash {
       position: absolute;
       top: 0; left: 0;
@@ -183,7 +174,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 14px;
+      gap: 12px;
       z-index: 100;
     }
 
@@ -202,23 +193,44 @@
       padding: 0 20px;
     }
 
-    #btn-start {
-      margin-top: 6px;
-      width: 120px;
-      height: 36px;
-      background: #fff;
-      color: #000;
-      border: none;
-      border-radius: 4px;
-      font-family: monospace;
-      font-size: 12px;
-      font-weight: bold;
-      letter-spacing: 0.1em;
-      cursor: pointer;
-      text-transform: uppercase;
+    /* Small spinner shown while camera is preparing */
+    #splash-spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid #2a2a2a;
+      border-top-color: #555;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
     }
 
-    #btn-start:active { background: #ccc; }
+    /* START button — dimmed until stream is ready */
+    #btn-start {
+      width: 140px;
+      height: 36px;
+      background: #1a1a1a;
+      color: #444;
+      border: 1px solid #333;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 10px;
+      font-weight: bold;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      cursor: default;
+      transition: background 0.3s, color 0.3s, border-color 0.3s;
+    }
+
+    /* Lights up when stream is ready */
+    #btn-start.ready {
+      background: #fff;
+      color: #000;
+      border-color: #fff;
+      cursor: pointer;
+      font-size: 12px;
+      letter-spacing: 0.1em;
+    }
+
+    #btn-start.ready:active { background: #ddd; }
   </style>
 </head>
 <body>
@@ -246,7 +258,10 @@
   <div id="splash">
     <div id="splash-title">✦ Pixelart Cam</div>
     <div id="splash-sub">15 AI styles · scroll ▲▼ to pick<br>side button to shoot</div>
-    <button id="btn-start">START</button>
+    <!-- Spinner visible while camera prepares, hidden when ready -->
+    <div id="splash-spinner"></div>
+    <!-- Button starts dimmed, lights up when stream is ready -->
+    <button id="btn-start">preparing…</button>
   </div>
 
 </div>
@@ -274,46 +289,41 @@
   var styleIndex   = 0;
   var state        = 'splash';
   var cameraReady  = false;
-
-  // ── Two-flag handshake ────────────────────────────────────────────────────
-  // userGestured: set when START is tapped — signals play() is now permitted
-  // streamReady:  set when onloadedmetadata fires — signals srcObject is live
-  // play() is called inside onloadedmetadata only when BOTH flags are true.
-  // Whichever happens second triggers play(), so order doesn't matter.
   var userGestured = false;
   var streamReady  = false;
 
-  var appEl       = document.getElementById('app');
-  var splashEl    = document.getElementById('splash');
-  var splashSub   = document.getElementById('splash-sub');
-  var btnStart    = document.getElementById('btn-start');
-  var videoEl     = document.getElementById('video');
-  var previewEl   = document.getElementById('preview');
-  var overlayEl   = document.getElementById('overlay');
-  var overlayText = document.getElementById('overlay-text');
-  var styleNameEl = document.getElementById('style-name');
-  var statusEl    = document.getElementById('status');
-  var btnReset    = document.getElementById('btn-reset');
+  var appEl          = document.getElementById('app');
+  var splashEl       = document.getElementById('splash');
+  var splashSub      = document.getElementById('splash-sub');
+  var splashSpinner  = document.getElementById('splash-spinner');
+  var btnStart       = document.getElementById('btn-start');
+  var videoEl        = document.getElementById('video');
+  var previewEl      = document.getElementById('preview');
+  var overlayEl      = document.getElementById('overlay');
+  var overlayText    = document.getElementById('overlay-text');
+  var styleNameEl    = document.getElementById('style-name');
+  var statusEl       = document.getElementById('status');
+  var btnReset       = document.getElementById('btn-reset');
 
-  // ── Called when BOTH flags are true — safe to play ────────────────────────
+  // ── tryPlay — called only when BOTH flags are true ────────────────────────
   function tryPlay() {
     videoEl.play()
       .then(function() {
         cameraReady = true;
         setState('live');
       })
-      .catch(function(err) {
-        // Still blocked — update splash so user can tap again
-        splashEl.style.display = 'flex';
-        splashSub.textContent  = 'Tap START again to enable camera';
-        splashSub.style.color  = '#fa4';
-        setStatus('tap START to enable camera');
+      .catch(function() {
+        // Gesture window expired — restore splash, reset gesture flag
+        splashEl.style.display  = 'flex';
+        splashSub.textContent   = 'Tap START again to enable camera';
+        splashSub.style.color   = '#fa4';
+        splashSpinner.style.display = 'none';
         state        = 'splash';
-        userGestured = false; // reset so next tap retries
+        userGestured = false;
       });
   }
 
-  // ── Step 1: getUserMedia — runs immediately on load, no gesture needed ────
+  // ── setupStream — called on page load, no gesture needed ─────────────────
   function setupStream() {
     navigator.mediaDevices.getUserMedia({
       video: {
@@ -324,37 +334,48 @@
     })
     .then(function(stream) {
       videoEl.srcObject = stream;
-
       videoEl.onloadedmetadata = function() {
         streamReady = true;
+        // Stream is ready — light up the START button
+        splashSpinner.style.display = 'none';
+        btnStart.textContent = 'START';
+        btnStart.classList.add('ready');
+        splashSub.textContent = '15 AI styles · scroll ▲▼ to pick';
+        splashSub.style.color = '#888';
+
         if (userGestured) {
-          // User already tapped START — play immediately
+          // User tapped START before stream was ready — play now
           tryPlay();
         }
-        // else: wait for START tap; tryPlay() will be called from onStart()
       };
     })
     .catch(function(err) {
-      splashSub.textContent = 'Camera error — tap START to retry';
+      splashSpinner.style.display = 'none';
+      btnStart.textContent = 'RETRY';
+      btnStart.classList.add('ready');
+      splashSub.textContent = 'Camera error — tap RETRY';
       splashSub.style.color = '#c44';
     });
   }
 
-  // ── Step 2: START tap — runs when user taps, no stream needed yet ─────────
+  // ── onStart — called when user taps START ─────────────────────────────────
   function onStart() {
+    if (!btnStart.classList.contains('ready')) return; // ignore taps while dimmed
     splashEl.style.display = 'none';
     state        = 'live';
     userGestured = true;
-    setStatus('starting camera…');
 
     if (streamReady) {
-      // Stream already ready — play immediately
-      tryPlay();
+      tryPlay(); // stream already ready — instant
+    } else {
+      // Rare: tapped before stream ready (e.g. RETRY after error)
+      // Re-run setupStream and tryPlay will fire from onloadedmetadata
+      setStatus('starting camera…');
+      setupStream();
     }
-    // else: wait for onloadedmetadata; tryPlay() will be called from there
   }
 
-  // ── START button listeners ─────────────────────────────────────────────────
+  // ── START button ──────────────────────────────────────────────────────────
   btnStart.addEventListener('touchstart', function(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -369,10 +390,9 @@
   // ── Hardware events ───────────────────────────────────────────────────────
   window.addEventListener('sideClick', function() {
     if (state === 'splash') { onStart(); return; }
-    if (!cameraReady)       { if (streamReady) tryPlay(); return; }
+    if (!cameraReady) { if (streamReady) tryPlay(); return; }
     shoot();
   });
-
   window.addEventListener('scrollDown', nextStyle);
   window.addEventListener('scrollUp',   prevStyle);
 
@@ -515,7 +535,7 @@
 
   // ── Boot ──────────────────────────────────────────────────────────────────
   updateStyleLabel();
-  setupStream(); // start getUserMedia immediately — no gesture needed for this
+  setupStream();
 </script>
 </body>
 </html>
