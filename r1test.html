@@ -26,10 +26,17 @@
   - init() is now safely re-callable via an `initInProgress` guard, so
     touch/sideClick retries never stack concurrent getUserMedia calls.
   - sideClick and video tap now call init() instead of shoot() when the
-    camera isn't ready yet. On rabbitOS, getUserMedia requires a real user
-    gesture to unblock the WebView media permission gate — this satisfies it.
-  - Status message updated to "tap screen to enable camera" on camera error
-    so the user knows how to recover rather than seeing a dead screen.
+    camera isn't ready yet.
+  - Status message updated to "tap screen to enable camera" on camera error.
+
+  FIX (v4):
+  - Added a full-screen splash screen with a START button as the very first
+    thing the user sees. getUserMedia is only called AFTER the user taps START,
+    guaranteeing a real user gesture precedes the camera request. This is the
+    most reliable fix for rabbitOS WebView's media permission gate.
+  - On camera error the splash is restored so the user can tap START to retry.
+  - sideClick on the splash screen also triggers START (acts as user gesture).
+  - Nothing camera-related runs automatically on page load.
 -->
 <html lang="en">
 <head>
@@ -59,7 +66,57 @@
       transition: border-color 0.2s ease;
     }
 
-    /* ── Camera / preview layer ── */
+    /* ── Splash screen ────────────────────────────────────────────────────── */
+    #splash {
+      position: absolute;
+      top: 0; left: 0;
+      width: 240px;
+      height: 282px;
+      background: #0a0a0a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      z-index: 100;
+    }
+
+    #splash-title {
+      font-size: 13px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: #fff;
+    }
+
+    #splash-sub {
+      font-size: 9px;
+      color: #555;
+      text-align: center;
+      line-height: 1.6;
+      padding: 0 20px;
+    }
+
+    #btn-start {
+      margin-top: 6px;
+      width: 120px;
+      height: 36px;
+      background: #fff;
+      color: #000;
+      border: none;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      font-weight: bold;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      text-transform: uppercase;
+    }
+
+    #btn-start:active {
+      background: #ccc;
+    }
+
+    /* ── Camera / preview layer ─────────────────────────────────────────────*/
     #video, #preview {
       position: absolute;
       top: 0; left: 0;
@@ -72,7 +129,7 @@
       display: none;
     }
 
-    /* ── Style label strip ── */
+    /* ── Style label strip ───────────────────────────────────────────────── */
     #style-strip {
       position: absolute;
       top: 0; left: 0; right: 0;
@@ -91,7 +148,7 @@
       text-transform: uppercase;
     }
 
-    /* ── Processing overlay ── */
+    /* ── Processing overlay ──────────────────────────────────────────────── */
     #overlay {
       position: absolute;
       top: 0; left: 0;
@@ -128,7 +185,7 @@
       text-align: center;
     }
 
-    /* ── Bottom bar ── */
+    /* ── Bottom bar ──────────────────────────────────────────────────────── */
     #bar {
       position: absolute;
       bottom: 0; left: 0; right: 0;
@@ -150,7 +207,6 @@
       text-overflow: ellipsis;
     }
 
-    /* Scroll wheel hint arrows */
     #arr-up, #arr-down {
       font-size: 14px;
       color: #444;
@@ -160,7 +216,6 @@
       user-select: none;
     }
 
-    /* Reset button — shown while in preview state */
     #btn-reset {
       display: none;
       height: 28px;
@@ -183,11 +238,18 @@
 <body>
 <div id="app">
 
-  <!-- Camera and preview images -->
-  <video id="video" autoplay playsinline muted></video>
+  <!-- Splash — visible on load, dismissed only by user tapping START -->
+  <div id="splash">
+    <div id="splash-title">✦ Pixelart Cam</div>
+    <div id="splash-sub">15 AI styles · scroll ▲▼ to pick<br>side button to shoot</div>
+    <button id="btn-start">START</button>
+  </div>
+
+  <!-- Camera and preview (hidden until splash dismissed) -->
+  <video id="video" autoplay playsinline muted style="display:none"></video>
   <img   id="preview" alt="captured">
 
-  <!-- Current style name overlay at top -->
+  <!-- Style name overlay -->
   <div id="style-strip">
     <span id="style-name">SIMPSONS</span>
   </div>
@@ -198,10 +260,10 @@
     <div id="overlay-text">Sending to r1…</div>
   </div>
 
-  <!-- Bottom bar: status + scroll hints + reset -->
+  <!-- Bottom bar -->
   <div id="bar">
     <span id="arr-up">▲</span>
-    <span id="status">initializing…</span>
+    <span id="status">tap START to begin</span>
     <span id="arr-down">▼</span>
     <button id="btn-reset">↺ retake</button>
   </div>
@@ -233,24 +295,23 @@
   let styleIndex = 0;
 
   // ─── State ────────────────────────────────────────────────────────────────
-  // 'live'       — camera is showing, ready to shoot
-  // 'sending'    — captured, sending to bridge, spinner up
-  // 'processing' — bridge confirmed receipt, spinner still up
-  // 'done'       — complete (or timed out), reset available
-  // 'error'      — something went wrong, reset available
-  let state = 'live';
+  // 'splash'     — splash screen visible, camera not started
+  // 'live'       — camera running, ready to shoot
+  // 'sending'    — captured, spinner up, sent to bridge
+  // 'processing' — bridge acknowledged, waiting
+  // 'done'       — complete (or fallback timeout), reset available
+  // 'error'      — bridge/camera error, reset available
+  let state = 'splash';
 
-  // FIX v2: camera readiness flag — shoot() is a no-op until this is true.
-  // Prevents longPressStart (fired by rabbitOS on plugin load) from
-  // capturing a blank frame before getUserMedia has resolved.
-  let cameraReady = false;
-
-  // FIX v3: prevents concurrent getUserMedia calls if the user taps/clicks
-  // multiple times before the first init() has finished resolving.
+  // Camera readiness flags
+  let cameraReady    = false;
   let initInProgress = false;
 
   // ─── DOM refs ─────────────────────────────────────────────────────────────
   const appEl       = document.getElementById('app');
+  const splashEl    = document.getElementById('splash');
+  const splashSub   = document.getElementById('splash-sub');
+  const btnStart    = document.getElementById('btn-start');
   const videoEl     = document.getElementById('video');
   const previewEl   = document.getElementById('preview');
   const overlayEl   = document.getElementById('overlay');
@@ -264,6 +325,7 @@
     state = s;
     switch (s) {
       case 'live':
+        splashEl.style.display  = 'none';
         videoEl.style.display   = 'block';
         previewEl.style.display = 'none';
         overlayEl.classList.remove('visible');
@@ -299,39 +361,102 @@
     }
   }
 
-  function setStatus(msg) {
-    statusEl.textContent = msg;
+  function setStatus(msg) { statusEl.textContent = msg; }
+  function updateStyleLabel() { styleNameEl.textContent = STYLES[styleIndex].name; }
+
+  // ─── Init camera ──────────────────────────────────────────────────────────
+  // ONLY called from a confirmed user gesture. Never called automatically.
+  async function init() {
+    if (cameraReady || initInProgress) return;
+    initInProgress = true;
+    setStatus('starting camera…');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false
+      });
+      videoEl.srcObject = stream;
+      await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
+      await videoEl.play();
+      initInProgress = false;
+      cameraReady    = true;
+      setState('live');
+    } catch (err) {
+      initInProgress = false;
+      // Restore splash so the user can tap START again to retry
+      splashEl.style.display = 'flex';
+      splashSub.textContent  = 'Camera error — tap START to retry';
+      splashSub.style.color  = '#c44';
+      setStatus('camera error · tap START');
+      appEl.style.borderColor = '#662222';
+      state = 'splash';
+    }
   }
 
-  function updateStyleLabel() {
-    styleNameEl.textContent = STYLES[styleIndex].name;
+  // ─── START button ─────────────────────────────────────────────────────────
+  // FIX v4: this is the ONLY place getUserMedia is initiated. The tap on START
+  // is an unambiguous user gesture, satisfying rabbitOS WebView's media gate.
+  function onStart() {
+    splashEl.style.display = 'none';
+    state = 'live'; // set before init() so the guard doesn't bail
+    init();
   }
+
+  btnStart.addEventListener('click', onStart);
+  btnStart.addEventListener('touchstart', e => {
+    e.preventDefault();
+    onStart();
+  }, { passive: false });
+
+  // ─── Hardware events ──────────────────────────────────────────────────────
+  window.addEventListener('sideClick', () => {
+    if (state === 'splash') { onStart(); return; }   // START from side button
+    if (!cameraReady)       { init();    return; }   // retry init
+    shoot();
+  });
+  window.addEventListener('scrollDown', nextStyle);
+  window.addEventListener('scrollUp',   prevStyle);
+
+  // ─── Touch events ─────────────────────────────────────────────────────────
+  document.body.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.target;
+    // Splash START button is handled by its own listener above;
+    // swallow touches on the splash so they don't fall through.
+    if (t === splashEl || splashEl.contains(t)) return;
+    if (t === videoEl || t === previewEl) {
+      if (!cameraReady) { init(); return; }
+      shoot();
+    }
+    if (t.id === 'btn-reset' || t.closest('#btn-reset')) reset();
+    if (t.id === 'arr-up')   prevStyle();
+    if (t.id === 'arr-down') nextStyle();
+  }, { passive: false });
+
+  // Desktop click fallbacks
+  videoEl.addEventListener('click', () => {
+    if (!cameraReady) { init(); return; }
+    shoot();
+  });
+  btnReset.addEventListener('click', reset);
+  document.getElementById('arr-up').addEventListener('click',   prevStyle);
+  document.getElementById('arr-down').addEventListener('click', nextStyle);
 
   // ─── Capture & send ───────────────────────────────────────────────────────
   function shoot() {
-    // FIX: guard against premature fire (e.g. longPressStart on boot)
     if (!cameraReady || state !== 'live') return;
 
-    // Capture full resolution frame
     const canvas = document.createElement('canvas');
     canvas.width  = videoEl.videoWidth  || 640;
     canvas.height = videoEl.videoHeight || 480;
     canvas.getContext('2d').drawImage(videoEl, 0, 0);
 
     const dataUri = canvas.toDataURL('image/jpeg', 0.8);
-
-    // Show freeze-frame as preview
     previewEl.src = dataUri;
     setState('sending');
 
     const style = STYLES[styleIndex];
 
-    // Register response handler BEFORE sending.
-    // The bridge calls window.onPluginMessage(data) where data.status is:
-    //   "processing" — r1 has received and started generating
-    //   "complete"   — may or may not fire back into WebView
-    //                  (the generated image goes to r1 OS gallery, not here)
-    // We set a fallback timeout in case "complete" never fires.
     window.onPluginMessage = function(data) {
       if (data && data.status === 'processing') {
         setState('processing');
@@ -345,15 +470,12 @@
       }
     };
 
-    // Also listen via CustomEvent in case bridge uses that path
-    // (the official Rabbit SDK wrapper dispatches pluginMessage CustomEvents)
     function onCustomEvent(e) {
       window.onPluginMessage && window.onPluginMessage(e.detail);
       window.removeEventListener('pluginMessage', onCustomEvent);
     }
     window.addEventListener('pluginMessage', onCustomEvent);
 
-    // Send to bridge
     if (isR1) {
       PluginMessageHandler.postMessage(JSON.stringify({
         message:     style.prompt,
@@ -363,22 +485,20 @@
     } else {
       // Desktop simulation
       setTimeout(() => { window.onPluginMessage({ status: 'processing' }); }, 600);
-      setTimeout(() => { window.onPluginMessage({ status: 'complete' }); }, 3000);
+      setTimeout(() => { window.onPluginMessage({ status: 'complete'   }); }, 3000);
     }
 
-    // Fallback: if "complete" never fires (likely — it goes to OS, not WebView),
-    // transition to "done" state after a reasonable wait so the user isn't stuck.
     const fallbackTimer = setTimeout(() => {
       if (state === 'sending' || state === 'processing') {
         setState('done');
         setStatus('sent · result in r1 gallery');
       }
-    }, 15000); // 15 seconds — generous for slow connections
+    }, 15000);
   }
 
   // ─── Reset to live camera ─────────────────────────────────────────────────
   function reset() {
-    window.onPluginMessage = null; // clear handler
+    window.onPluginMessage = null;
     setState('live');
   }
 
@@ -395,77 +515,8 @@
     updateStyleLabel();
   }
 
-  // ─── Hardware events ──────────────────────────────────────────────────────
-  // FIX v2: longPressStart removed — rabbitOS fires it on plugin load (before
-  // the camera is ready), which would trigger shoot() on a blank stream.
-  // sideClick is the correct and reliable shoot trigger on the R1.
-  // FIX v3: if the camera isn't ready yet, sideClick retries init() instead
-  // of shoot(). The side button press counts as a user gesture on rabbitOS,
-  // which can unblock a stuck getUserMedia permission gate.
-  window.addEventListener('sideClick', () => {
-    if (!cameraReady) { init(); return; }
-    shoot();
-  });
-  window.addEventListener('scrollDown', nextStyle);
-  window.addEventListener('scrollUp',   prevStyle);
-
-  // ─── Touch events ─────────────────────────────────────────────────────────
-  // FIX v3: tapping the video area when camera isn't ready retries init()
-  // instead of shoot(). The touch event is a user gesture, which satisfies
-  // rabbitOS WebView's media permission gate if getUserMedia was blocked.
-  document.body.addEventListener('touchstart', e => {
-    e.preventDefault();
-    const t = e.target;
-    if (t === videoEl || t === previewEl) {
-      if (!cameraReady) { init(); return; }
-      shoot();
-    }
-    if (t.id === 'btn-reset' || t.closest('#btn-reset')) reset();
-    if (t.id === 'arr-up')   prevStyle();
-    if (t.id === 'arr-down') nextStyle();
-  }, { passive: false });
-
-  // Desktop click fallbacks — same retry-init logic
-  videoEl.addEventListener('click', () => {
-    if (!cameraReady) { init(); return; }
-    shoot();
-  });
-  btnReset.addEventListener('click', reset);
-  document.getElementById('arr-up').addEventListener('click', prevStyle);
-  document.getElementById('arr-down').addEventListener('click', nextStyle);
-
-  // ─── Init camera ──────────────────────────────────────────────────────────
-  // FIX v3: guarded with initInProgress so concurrent calls (e.g. rapid taps
-  // before the first getUserMedia resolves) don't stack up. Safe to call from
-  // any user gesture — touch, click, or sideClick — as a retry mechanism.
-  async function init() {
-    if (cameraReady || initInProgress) return;
-    initInProgress = true;
-    updateStyleLabel();
-    setStatus('starting camera…');
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false
-      });
-      videoEl.srcObject = stream;
-      await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
-      await videoEl.play();
-      // FIX v2: only transition to 'live' if nothing has taken over state.
-      // FIX v3: mark initInProgress done before setting cameraReady.
-      initInProgress = false;
-      cameraReady = true;
-      if (state === 'live') setState('live');
-    } catch (err) {
-      initInProgress = false;
-      // FIX v3: tell the user they can tap to retry rather than showing a
-      // dead screen with a cryptic error message.
-      setStatus('tap screen to enable camera');
-      appEl.style.borderColor = '#662222';
-    }
-  }
-
-  init();
+  // ─── Boot — nothing camera-related, just set the style label ──────────────
+  updateStyleLabel();
 </script>
 </body>
 </html>
