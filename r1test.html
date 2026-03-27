@@ -21,6 +21,15 @@
     is a startup event on rabbitOS, not a reliable shoot trigger.
   - init() now only calls setState('live') if state hasn't been changed by
     something else in the meantime.
+
+  FIX (v3):
+  - init() is now safely re-callable via an `initInProgress` guard, so
+    touch/sideClick retries never stack concurrent getUserMedia calls.
+  - sideClick and video tap now call init() instead of shoot() when the
+    camera isn't ready yet. On rabbitOS, getUserMedia requires a real user
+    gesture to unblock the WebView media permission gate — this satisfies it.
+  - Status message updated to "tap screen to enable camera" on camera error
+    so the user knows how to recover rather than seeing a dead screen.
 -->
 <html lang="en">
 <head>
@@ -231,10 +240,14 @@
   // 'error'      — something went wrong, reset available
   let state = 'live';
 
-  // FIX: camera readiness flag — shoot() is a no-op until this is true.
+  // FIX v2: camera readiness flag — shoot() is a no-op until this is true.
   // Prevents longPressStart (fired by rabbitOS on plugin load) from
   // capturing a blank frame before getUserMedia has resolved.
   let cameraReady = false;
+
+  // FIX v3: prevents concurrent getUserMedia calls if the user taps/clicks
+  // multiple times before the first init() has finished resolving.
+  let initInProgress = false;
 
   // ─── DOM refs ─────────────────────────────────────────────────────────────
   const appEl       = document.getElementById('app');
@@ -383,32 +396,53 @@
   }
 
   // ─── Hardware events ──────────────────────────────────────────────────────
-  // FIX: longPressStart removed — rabbitOS fires it on plugin load (before
+  // FIX v2: longPressStart removed — rabbitOS fires it on plugin load (before
   // the camera is ready), which would trigger shoot() on a blank stream.
   // sideClick is the correct and reliable shoot trigger on the R1.
-  window.addEventListener('sideClick',  shoot);
+  // FIX v3: if the camera isn't ready yet, sideClick retries init() instead
+  // of shoot(). The side button press counts as a user gesture on rabbitOS,
+  // which can unblock a stuck getUserMedia permission gate.
+  window.addEventListener('sideClick', () => {
+    if (!cameraReady) { init(); return; }
+    shoot();
+  });
   window.addEventListener('scrollDown', nextStyle);
   window.addEventListener('scrollUp',   prevStyle);
 
   // ─── Touch events ─────────────────────────────────────────────────────────
+  // FIX v3: tapping the video area when camera isn't ready retries init()
+  // instead of shoot(). The touch event is a user gesture, which satisfies
+  // rabbitOS WebView's media permission gate if getUserMedia was blocked.
   document.body.addEventListener('touchstart', e => {
     e.preventDefault();
     const t = e.target;
-    if (t === videoEl || t === previewEl) shoot();
+    if (t === videoEl || t === previewEl) {
+      if (!cameraReady) { init(); return; }
+      shoot();
+    }
     if (t.id === 'btn-reset' || t.closest('#btn-reset')) reset();
     if (t.id === 'arr-up')   prevStyle();
     if (t.id === 'arr-down') nextStyle();
   }, { passive: false });
 
-  // Desktop click fallbacks
-  videoEl.addEventListener('click', shoot);
+  // Desktop click fallbacks — same retry-init logic
+  videoEl.addEventListener('click', () => {
+    if (!cameraReady) { init(); return; }
+    shoot();
+  });
   btnReset.addEventListener('click', reset);
   document.getElementById('arr-up').addEventListener('click', prevStyle);
   document.getElementById('arr-down').addEventListener('click', nextStyle);
 
   // ─── Init camera ──────────────────────────────────────────────────────────
+  // FIX v3: guarded with initInProgress so concurrent calls (e.g. rapid taps
+  // before the first getUserMedia resolves) don't stack up. Safe to call from
+  // any user gesture — touch, click, or sideClick — as a retry mechanism.
   async function init() {
+    if (cameraReady || initInProgress) return;
+    initInProgress = true;
     updateStyleLabel();
+    setStatus('starting camera…');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' },
@@ -417,12 +451,16 @@
       videoEl.srcObject = stream;
       await new Promise(resolve => { videoEl.onloadedmetadata = resolve; });
       await videoEl.play();
-      // FIX: only transition to 'live' if nothing has taken over state,
-      // then mark camera as ready so shoot() can proceed.
+      // FIX v2: only transition to 'live' if nothing has taken over state.
+      // FIX v3: mark initInProgress done before setting cameraReady.
+      initInProgress = false;
       cameraReady = true;
       if (state === 'live') setState('live');
     } catch (err) {
-      setStatus('camera error: ' + err.message);
+      initInProgress = false;
+      // FIX v3: tell the user they can tap to retry rather than showing a
+      // dead screen with a cryptic error message.
+      setStatus('tap screen to enable camera');
       appEl.style.borderColor = '#662222';
     }
   }
