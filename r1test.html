@@ -1,15 +1,21 @@
 <!DOCTYPE html>
 <!--
-  pixelart-cam — Rabbit R1 Creation  v13
-  Added camera flip (front/rear) button in the top-right of the viewfinder.
-  Flip stops the current stream, calls getUserMedia with the opposite
-  facingMode, and restarts — following the same safe init pattern as v12.
+  com.r1.* Plugin ID Scanner
+  Diagnostic tool for Rabbit R1 Creations.
+
+  Sends PluginMessageHandler.postMessage() calls with a fixed probe message
+  to a list of candidate com.r1.XXXX plugin IDs. Any ID that produces a
+  response via window.onPluginMessage is flagged as "LIVE" and stored in
+  localStorage so results persist across sessions.
+
+  Word list is curated — real English words grouped by semantic category
+  (audio, vision, AI, productivity, etc.) rather than random a-z bruteforce.
 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=240, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Pixelart Cam</title>
+  <title>R1 Plugin Scanner</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -17,466 +23,504 @@
       width: 240px;
       height: 282px;
       overflow: hidden;
-      background: #000;
-      color: #fff;
+      background: #080808;
+      color: #ccc;
       font-family: monospace;
-      font-size: 11px;
+      font-size: 9px;
     }
 
     #app {
       width: 240px;
       height: 282px;
-      border: 4px solid #222;
-      position: relative;
-      transition: border-color 0.2s ease;
-    }
-
-    #video {
-      position: absolute;
-      top: 0; left: 0;
-      width: 240px;
-      height: 240px;
-      object-fit: cover;
-      background: #000;
-    }
-
-    #preview {
-      position: absolute;
-      top: 0; left: 0;
-      width: 240px;
-      height: 240px;
-      object-fit: cover;
-      display: none;
-      z-index: 1;
-    }
-
-    /* ── Style label strip (top bar over video) ── */
-    #style-strip {
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 28px;
-      background: linear-gradient(to bottom, rgba(0,0,0,0.75), transparent);
       display: flex;
-      align-items: center;
-      padding: 0 8px;
-      z-index: 3;
-    }
-
-    #style-name {
-      flex: 1;
-      font-size: 10px;
-      color: #fff;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      pointer-events: none;
-    }
-
-    /* ── Flip camera button — top-right of viewfinder ── */
-    #btn-flip {
-      width: 26px;
-      height: 22px;
-      background: rgba(255,255,255,0.12);
-      border: 1px solid rgba(255,255,255,0.2);
-      border-radius: 3px;
-      color: #fff;
-      font-size: 13px;
-      line-height: 1;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      /* Hidden while camera is not live or during flip */
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s;
-    }
-
-    #btn-flip.visible {
-      opacity: 1;
-      pointer-events: auto;
-    }
-
-    #btn-flip:active {
-      background: rgba(255,255,255,0.25);
-    }
-
-    /* ── Processing overlay ── */
-    #overlay {
-      position: absolute;
-      top: 0; left: 0;
-      width: 240px;
-      height: 240px;
-      background: rgba(0,0,0,0.65);
-      display: none;
       flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      z-index: 3;
+      border: 2px solid #1a1a1a;
     }
 
-    #overlay.visible { display: flex; }
-
-    .spinner {
-      width: 28px;
-      height: 28px;
-      border: 3px solid #333;
-      border-top-color: #6af;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    #overlay-text {
-      font-size: 10px;
-      color: #aaa;
-      text-align: center;
-    }
-
-    /* ── Bottom bar ── */
-    #bar {
-      position: absolute;
-      bottom: 0; left: 0; right: 0;
-      height: 38px;
-      background: #111;
-      border-top: 1px solid #222;
+    /* ── Header ── */
+    #header {
+      height: 24px;
+      flex-shrink: 0;
+      background: #0f0f0f;
+      border-bottom: 1px solid #222;
       display: flex;
       align-items: center;
       padding: 0 6px;
       gap: 6px;
-      z-index: 3;
     }
 
-    #status {
+    #header-title {
       flex: 1;
       font-size: 9px;
+      color: #0f0;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    #counter {
+      font-size: 8px;
+      color: #444;
+    }
+
+    /* ── Scrollable log ── */
+    #log {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 3px 4px;
+      background: #080808;
+    }
+
+    .entry {
+      padding: 2px 3px;
+      margin-bottom: 1px;
+      border-radius: 2px;
+      line-height: 1.5;
+      word-break: break-all;
+    }
+
+    .e-info  { color: #444; }
+    .e-probe { color: #333; }
+    .e-live  { color: #0f0; background: #001800; border-left: 2px solid #0f0; padding-left: 4px; font-weight: bold; }
+    .e-err   { color: #600; }
+    .e-head  { color: #08f; margin-top: 4px; }
+    .e-saved { color: #880; background: #110; }
+    .e-done  { color: #0af; }
+
+    /* ── Progress bar ── */
+    #progress-wrap {
+      height: 3px;
+      flex-shrink: 0;
+      background: #111;
+    }
+
+    #progress-bar {
+      height: 3px;
+      background: #0f0;
+      width: 0%;
+      transition: width 0.1s linear;
+    }
+
+    /* ── Bottom controls ── */
+    #controls {
+      height: 36px;
+      flex-shrink: 0;
+      background: #0f0f0f;
+      border-top: 1px solid #222;
+      display: flex;
+      align-items: center;
+      padding: 0 4px;
+      gap: 3px;
+    }
+
+    .btn {
+      flex: 1;
+      height: 26px;
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 2px;
       color: #888;
+      font-family: monospace;
+      font-size: 8px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .btn:active { background: #222; color: #fff; }
+
+    .btn-start {
+      background: #001a00;
+      border-color: #0a4a0a;
+      color: #0c0;
+    }
+
+    .btn-start:active { background: #003000; }
+
+    .btn-start:disabled {
+      background: #111;
+      border-color: #1a1a1a;
+      color: #333;
+      cursor: default;
+    }
+
+    #status-bar {
+      height: 14px;
+      flex-shrink: 0;
+      background: #0a0a0a;
+      border-top: 1px solid #181818;
+      display: flex;
+      align-items: center;
+      padding: 0 5px;
+    }
+
+    #status-text {
+      font-size: 8px;
+      color: #444;
+      flex: 1;
       overflow: hidden;
       white-space: nowrap;
       text-overflow: ellipsis;
     }
 
-    #arr-up, #arr-down {
-      font-size: 14px;
-      color: #444;
-      cursor: pointer;
-      line-height: 1;
-      padding: 4px;
-      user-select: none;
+    #live-count {
+      font-size: 8px;
+      color: #0a0;
     }
-
-    #btn-reset {
-      display: none;
-      height: 28px;
-      padding: 0 10px;
-      background: #1a1a1a;
-      border: 1px solid #444;
-      border-radius: 4px;
-      color: #aaa;
-      font-family: monospace;
-      font-size: 10px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-
-    #btn-reset.visible { display: block; }
   </style>
 </head>
 <body>
 <div id="app">
 
-  <video id="video" playsinline></video>
-  <img   id="preview" alt="captured">
-
-  <!-- Top strip: style name left, flip button right -->
-  <div id="style-strip">
-    <span id="style-name">SIMPSONS</span>
-    <button id="btn-flip">⇄</button>
+  <div id="header">
+    <span id="header-title">⬡ R1 Plugin Scanner</span>
+    <span id="counter">—</span>
   </div>
 
-  <div id="overlay">
-    <div class="spinner"></div>
-    <div id="overlay-text">Sending to r1…</div>
+  <div id="log">
+    <div class="entry e-info">Ready. Tap SCAN to begin.</div>
+    <div class="entry e-info">Results persist across sessions.</div>
   </div>
 
-  <div id="bar">
-    <span id="arr-up">▲</span>
-    <span id="status">press side button to start</span>
-    <span id="arr-down">▼</span>
-    <button id="btn-reset">↺ retake</button>
+  <div id="progress-wrap">
+    <div id="progress-bar"></div>
+  </div>
+
+  <div id="controls">
+    <button class="btn btn-start" id="btn-scan">SCAN</button>
+    <button class="btn" id="btn-results">HITS</button>
+    <button class="btn" id="btn-clear-log">LOG</button>
+    <button class="btn" id="btn-clear-data">RESET</button>
+  </div>
+
+  <div id="status-bar">
+    <span id="status-text">idle · tap SCAN to probe all IDs</span>
+    <span id="live-count"></span>
   </div>
 
 </div>
 <script>
-  var isR1 = typeof PluginMessageHandler !== 'undefined';
+  // ── Candidate word list — real words, grouped by semantic category ─────────
+  // Each will be probed as com.r1.WORD
+  var CANDIDATES = [
+    // Audio / voice / speech
+    'audio','voice','speech','speak','microphone','mic','record','recorder',
+    'recording','transcribe','transcription','transcript','listen','dictate',
+    'dictation','recognize','recognition','whisper','stt','tts','synthesize',
+    'synthesis','vocal','vocalize','soundbite','sound','noise','capture',
 
-  var STYLES = [
-    { name: 'SIMPSONS',    prompt: 'Take a picture in the style of a Simpsons cartoon.' },
-    { name: 'GHIBLI',      prompt: 'Take a picture in the Studio Ghibli anime style — soft colors, whimsical atmosphere, and hand-drawn aesthetic.' },
-    { name: 'PIXAR',       prompt: 'Take a picture in the style of Pixar Animation.' },
-    { name: 'MINECRAFT',   prompt: 'Take a picture in the style of Minecraft.' },
-    { name: 'LEGO',        prompt: 'Take a picture and make it LEGO minifigures.' },
-    { name: 'WATERCOLOR',  prompt: 'Take a picture in the style of a Watercolor painting.' },
-    { name: 'CYBERPUNK',   prompt: 'Take a picture in a cyberpunk style with neon colors, tech elements, and futuristic vibes.' },
-    { name: 'COMIC',       prompt: 'Take a picture and make the subject a superhero in a comic book with several frames.' },
-    { name: 'FUNKO POP',   prompt: 'Take a picture and turn the subject into a Funko Pop.' },
-    { name: 'WARHOL',      prompt: 'Take a picture in the style of Andy Warhol — pop art with four duplicated images in a frame.' },
-    { name: 'RENAISSANCE', prompt: 'Take a picture in the style of a Renaissance Painting with depth, realism, and natural light.' },
-    { name: 'WANTED',      prompt: 'Take a picture in the style of an Old West Wanted Poster. The poster title is WANTED.' },
-    { name: 'TIME COVER',  prompt: 'Take a picture in the style of a polished TIME magazine cover. The title is PERSON OF THE YEAR.' },
-    { name: 'SOUTH PARK',  prompt: 'Take a picture in the style of a South Park cartoon.' },
-    { name: 'PERFECT',     prompt: 'Take a picture and make it picture perfect — improve lighting, colors, and overall composition. Make it photorealistic. 8k resolution.' },
+    // Vision / camera / image
+    'camera','photo','picture','image','snapshot','capture','scan','scanner',
+    'vision','visual','ocr','read','identify','detect','recognize','classify',
+    'pixelart','pixel','art','style','filter','transform','enhance','upscale',
+    'portrait','scene','object','face','faces','landmark','barcode','qr',
+
+    // AI / LLM / generation
+    'ai','llm','chat','gpt','assistant','generate','generation','prompt',
+    'complete','completion','summarize','summary','translate','translation',
+    'describe','analyze','analysis','understand','reasoning','infer',
+    'inference','embed','embedding','classify','classify',
+
+    // Search / data / web
+    'search','web','browse','browser','fetch','query','serp','news','weather',
+    'maps','location','gps','geocode','places','directions','navigate',
+    'navigation','calendar','time','clock','timer','alarm','reminder',
+
+    // Productivity / utility
+    'note','notes','memo','task','tasks','todo','list','reminder','reminders',
+    'contact','contacts','email','message','sms','call','dial','phone',
+    'notification','share','clipboard','paste','read','write','file','files', 'meeting', 'meetings',
+
+    // System / device
+    'system','device','settings','brightness','volume','wifi','bluetooth',
+    'battery','storage','memory','cpu','screen','display','flashlight','torch',
+    'vibrate','haptic','sensor','accelerometer','gyroscope','compass',
+
+    // Media / entertainment
+    'music','player','playlist','spotify','podcast','radio','stream',
+    'video','youtube','media','play','pause','skip','shuffle','lyrics',
+
+    // Smart home / IoT
+    'home','smart','iot','light','lights','thermostat','lock','unlock',
+    'door','garage','camera','sensor','switch','plug','outlet',
+
+    // Finance / commerce
+    'payment','pay','wallet','transaction','purchase','price','stock',
+    'crypto','currency','convert','exchange','budget','spend',
+
+    // Health / fitness
+    'health','fitness','steps','heart','heartrate','sleep','workout',
+    'exercise','calories','weight','nutrition','medicine','medication',
+
+    // Knowledge / reference
+    'wiki','wikipedia','dictionary','define','definition','thesaurus',
+    'math','calculate','calculator','convert','unit','formula',
+
+    // Social
+    'social','twitter','instagram','facebook','reddit','post','feed',
+    'contact','people','person','profile','avatar',
   ];
 
-  var styleIndex  = 0;
-  var state       = 'live';
-  var cameraReady = false;
-  var facingMode  = 'environment'; // current camera facing — 'environment' or 'user'
-  var flipping    = false;         // guard against double-tapping flip
+  // Deduplicate
+  var seen = {};
+  CANDIDATES = CANDIDATES.filter(function(w) {
+    if (seen[w]) return false;
+    seen[w] = true;
+    return true;
+  });
 
-  var appEl       = document.getElementById('app');
-  var videoEl     = document.getElementById('video');
-  var previewEl   = document.getElementById('preview');
-  var overlayEl   = document.getElementById('overlay');
-  var overlayText = document.getElementById('overlay-text');
-  var styleNameEl = document.getElementById('style-name');
-  var statusEl    = document.getElementById('status');
-  var btnReset    = document.getElementById('btn-reset');
-  var btnFlip     = document.getElementById('btn-flip');
+  var STORAGE_KEY = 'r1_scanner_hits';
+  var PROBE_MSG   = 'ping'; // minimal probe message
+  var PROBE_WAIT  = 1200;   // ms to wait for a response per plugin
+  var BATCH_SIZE  = 1;      // probe one at a time to avoid flooding
 
-  function setStatus(msg)     { statusEl.textContent = msg; }
-  function updateStyleLabel() { styleNameEl.textContent = STYLES[styleIndex].name; }
+  var isR1        = typeof PluginMessageHandler !== 'undefined';
+  var scanning    = false;
+  var scanIndex   = 0;
+  var hits        = {};     // { 'com.r1.foo': { response: ..., ts: ... } }
+  var currentId   = null;
+  var probeTimer  = null;
 
-  // ── Stop current stream tracks ────────────────────────────────────────────
-  function stopStream() {
-    if (videoEl.srcObject) {
-      videoEl.srcObject.getTracks().forEach(function(t) { t.stop(); });
-      videoEl.srcObject = null;
-    }
+  // ── DOM ───────────────────────────────────────────────────────────────────
+  var logEl       = document.getElementById('log');
+  var progressEl  = document.getElementById('progress-bar');
+  var counterEl   = document.getElementById('counter');
+  var statusEl    = document.getElementById('status-text');
+  var liveCountEl = document.getElementById('live-count');
+  var btnScan     = document.getElementById('btn-scan');
+  var btnResults  = document.getElementById('btn-results');
+  var btnClearLog = document.getElementById('btn-clear-log');
+  var btnClearData= document.getElementById('btn-clear-data');
+
+  // ── Logging ───────────────────────────────────────────────────────────────
+  function log(msg, cls) {
+    var d = document.createElement('div');
+    d.className = 'entry ' + (cls || 'e-info');
+    d.textContent = msg;
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
   }
 
-  // ── Start camera with given facingMode ────────────────────────────────────
-  function startCamera(facing) {
-    cameraReady = false;
-    btnFlip.classList.remove('visible');
-    setStatus('switching camera…');
+  function setStatus(msg) { statusEl.textContent = msg; }
 
-    navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: facing },
-        width:      { ideal: 640 },
-        height:     { ideal: 480 }
+  function updateLiveCount() {
+    var n = Object.keys(hits).length;
+    liveCountEl.textContent = n > 0 ? n + ' LIVE' : '';
+    counterEl.textContent   = scanIndex + '/' + CANDIDATES.length;
+  }
+
+  // ── localStorage ──────────────────────────────────────────────────────────
+  function saveHits() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(hits));
+    } catch(e) {}
+  }
+
+  function loadHits() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) hits = JSON.parse(raw);
+    } catch(e) { hits = {}; }
+  }
+
+  // ── Show stored hits ──────────────────────────────────────────────────────
+  function showResults() {
+    logEl.innerHTML = '';
+    var keys = Object.keys(hits);
+    if (keys.length === 0) {
+      log('No hits stored yet. Run a scan first.', 'e-info');
+      return;
+    }
+    log('── Stored hits (' + keys.length + ') ──', 'e-head');
+    keys.forEach(function(id) {
+      var h = hits[id];
+      log('✓ ' + id, 'e-live');
+      if (h.responseKeys && h.responseKeys.length) {
+        log('  keys: ' + h.responseKeys.join(', '), 'e-saved');
       }
-    })
-    .then(function(stream) {
-      videoEl.srcObject = stream;
-      videoEl.onloadedmetadata = function() {
-        var p = videoEl.play();
-        if (p !== undefined) {
-          p.then(function() {
-            onCameraLive();
-          }).catch(function() {
-            setStatus('press side button to start');
-          });
-        } else {
-          onCameraLive();
-        }
-      };
-    })
-    .catch(function(err) {
-      setStatus('camera error: ' + err.message);
-      flipping = false;
+      if (h.ts) {
+        log('  found: ' + new Date(h.ts).toLocaleString(), 'e-info');
+      }
     });
   }
 
-  // ── Init camera on load ───────────────────────────────────────────────────
-  function initCamera() {
-    startCamera(facingMode);
-  }
-
-  function onCameraLive() {
-    cameraReady = true;
-    flipping    = false;
-    btnFlip.classList.add('visible');
-    setStatus('▲▼ change style · side btn shoot');
-  }
-
-  // ── Flip camera ───────────────────────────────────────────────────────────
-  function flipCamera() {
-    if (!cameraReady || state !== 'live' || flipping) return;
-    flipping   = true;
-    facingMode = (facingMode === 'environment') ? 'user' : 'environment';
-    stopStream();
-    startCamera(facingMode);
-  }
-
-  // ── Flip button events ────────────────────────────────────────────────────
-  btnFlip.addEventListener('touchstart', function(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    flipCamera();
-  }, { passive: false });
-
-  btnFlip.addEventListener('click', function(e) {
-    e.stopPropagation();
-    flipCamera();
-  });
-
-  // ── sideClick ─────────────────────────────────────────────────────────────
-  window.addEventListener('sideClick', function() {
-    if (!cameraReady) {
-      videoEl.play().then(function() {
-        onCameraLive();
-      }).catch(function() {
-        setStatus('press side button to start');
-      });
+  // ── Probe a single plugin ID ──────────────────────────────────────────────
+  function probeNext() {
+    if (!scanning || scanIndex >= CANDIDATES.length) {
+      finishScan();
       return;
     }
-    shoot();
-  });
 
-  window.addEventListener('scrollDown', nextStyle);
-  window.addEventListener('scrollUp',   prevStyle);
+    var word = CANDIDATES[scanIndex];
+    var pluginId = 'com.r1.' + word;
+    currentId = pluginId;
 
-  // ── Touch events ──────────────────────────────────────────────────────────
-  videoEl.addEventListener('touchstart', function(e) {
-    if (!cameraReady) {
-      videoEl.play().then(onCameraLive).catch(function() {});
+    // Update progress
+    var pct = Math.round((scanIndex / CANDIDATES.length) * 100);
+    progressEl.style.width = pct + '%';
+    counterEl.textContent  = scanIndex + '/' + CANDIDATES.length;
+    setStatus('probing ' + pluginId);
+
+    log('→ ' + pluginId, 'e-probe');
+
+    if (!isR1) {
+      // Desktop simulation — skip but log
+      scanIndex++;
+      setTimeout(probeNext, 20);
       return;
     }
-    e.preventDefault();
-    shoot();
-  }, { passive: false });
 
-  previewEl.addEventListener('touchstart', function(e) {
-    e.preventDefault();
-    if (cameraReady) shoot();
-  }, { passive: false });
-
-  btnReset.addEventListener('touchstart', function(e) {
-    e.preventDefault();
-    reset();
-  }, { passive: false });
-
-  document.getElementById('arr-up').addEventListener('touchstart', function(e) {
-    e.preventDefault();
-    prevStyle();
-  }, { passive: false });
-
-  document.getElementById('arr-down').addEventListener('touchstart', function(e) {
-    e.preventDefault();
-    nextStyle();
-  }, { passive: false });
-
-  // Desktop click fallbacks
-  videoEl.addEventListener('click',   function() { if (cameraReady) shoot(); });
-  btnReset.addEventListener('click',  reset);
-  document.getElementById('arr-up').addEventListener('click',   prevStyle);
-  document.getElementById('arr-down').addEventListener('click', nextStyle);
-
-  // ── Capture & send ────────────────────────────────────────────────────────
-  function shoot() {
-    if (!cameraReady || state !== 'live') return;
-
-    var canvas = document.createElement('canvas');
-    canvas.width  = videoEl.videoWidth  || 640;
-    canvas.height = videoEl.videoHeight || 480;
-    canvas.getContext('2d').drawImage(videoEl, 0, 0);
-
-    var dataUri = canvas.toDataURL('image/jpeg', 0.8);
-    previewEl.src = dataUri;
-
-    state = 'sending';
-    previewEl.style.display = 'block';
-    overlayEl.classList.add('visible');
-    overlayText.textContent = 'Sending to r1…';
-    btnReset.classList.remove('visible');
-    btnFlip.classList.remove('visible');
-    appEl.style.borderColor = '#884400';
-    setStatus('sending…');
-
-    var style = STYLES[styleIndex];
-
+    // Set up response handler BEFORE sending
     window.onPluginMessage = function(data) {
-      if (data && data.status === 'processing') {
-        overlayText.textContent = 'r1 is transforming…';
-        appEl.style.borderColor = '#334499';
-        setStatus('processing on device…');
-        state = 'processing';
-      } else if (data && data.status === 'complete') {
-        clearTimeout(fallbackTimer);
-        done();
-      } else if (data && data.error) {
-        clearTimeout(fallbackTimer);
-        setStatus('error: ' + data.error);
-        overlayEl.classList.remove('visible');
-        btnReset.classList.add('visible');
-        appEl.style.borderColor = '#662222';
-        state = 'error';
+      if (!scanning || currentId !== pluginId) return;
+      clearTimeout(probeTimer);
+
+      // GOT A RESPONSE — this plugin ID is live
+      var responseKeys = [];
+      if (data && typeof data === 'object') {
+        responseKeys = Object.keys(data);
+      } else if (data && typeof data === 'string') {
+        try { responseKeys = Object.keys(JSON.parse(data)); } catch(e) {}
       }
+
+      log('✓ LIVE: ' + pluginId, 'e-live');
+      if (responseKeys.length) {
+        log('  response keys: ' + responseKeys.join(', '), 'e-saved');
+      }
+
+      hits[pluginId] = {
+        ts:           Date.now(),
+        responseKeys: responseKeys,
+        rawSample:    JSON.stringify(data).substring(0, 120)
+      };
+      saveHits();
+      updateLiveCount();
+
+      scanIndex++;
+      setTimeout(probeNext, 100);
     };
 
-    function onCustomEvent(e) {
-      window.onPluginMessage && window.onPluginMessage(e.detail);
-      window.removeEventListener('pluginMessage', onCustomEvent);
-    }
-    window.addEventListener('pluginMessage', onCustomEvent);
-
-    if (isR1) {
+    // Send probe
+    try {
       PluginMessageHandler.postMessage(JSON.stringify({
-        message:     style.prompt,
-        pluginId:    'com.r1.pixelart',
-        imageBase64: dataUri
+        message:  PROBE_MSG,
+        pluginId: pluginId
       }));
-    } else {
-      setTimeout(function() { window.onPluginMessage({ status: 'processing' }); }, 600);
-      setTimeout(function() { window.onPluginMessage({ status: 'complete'   }); }, 3000);
+    } catch(e) {
+      log('  send error: ' + e.message, 'e-err');
+      scanIndex++;
+      setTimeout(probeNext, 50);
+      return;
     }
 
-    var fallbackTimer = setTimeout(function() {
-      if (state === 'sending' || state === 'processing') done();
-    }, 15000);
+    // Timeout — no response means this ID is dead
+    probeTimer = setTimeout(function() {
+      if (!scanning || currentId !== pluginId) return;
+      // Silently move on — don't log dead IDs to keep log clean
+      scanIndex++;
+      probeNext();
+    }, PROBE_WAIT);
   }
 
-  function done() {
-    overlayEl.classList.remove('visible');
-    btnReset.classList.add('visible');
-    appEl.style.borderColor = '#226622';
-    setStatus('done · result in r1 gallery');
-    state = 'done';
+  // ── Scan control ──────────────────────────────────────────────────────────
+  function startScan() {
+    if (scanning) return;
+    if (!isR1) {
+      log('⚠ Not running on R1 — desktop mode, no real probes sent.', 'e-err');
+      log('Install as a Creation to run live scans.', 'e-info');
+    }
+    scanning  = true;
+    scanIndex = 0;
+    btnScan.disabled = true;
+    log('── Scan started: ' + CANDIDATES.length + ' candidates ──', 'e-head');
+    log('Probe timeout: ' + PROBE_WAIT + 'ms per ID', 'e-info');
+    log('Only LIVE responses will be shown.', 'e-info');
+    probeNext();
   }
 
-  // ── Reset ─────────────────────────────────────────────────────────────────
-  function reset() {
-    window.onPluginMessage  = null;
-    previewEl.style.display = 'none';
-    overlayEl.classList.remove('visible');
-    btnReset.classList.remove('visible');
-    btnFlip.classList.add('visible');
-    appEl.style.borderColor = '#222';
-    setStatus('▲▼ change style · side btn shoot');
-    state = 'live';
+  function finishScan() {
+    scanning = false;
+    btnScan.disabled = false;
+    progressEl.style.width = '100%';
+    var n = Object.keys(hits).length;
+    log('── Scan complete ──', 'e-done');
+    log('Probed: ' + CANDIDATES.length + ' IDs', 'e-done');
+    log('Live hits: ' + n, 'e-done');
+    setStatus('done · ' + n + ' live IDs found');
+    updateLiveCount();
+    setTimeout(function() { progressEl.style.width = '0%'; }, 2000);
   }
 
-  // ── Style cycling ─────────────────────────────────────────────────────────
-  function nextStyle() {
-    if (state !== 'live') return;
-    styleIndex = (styleIndex + 1) % STYLES.length;
-    updateStyleLabel();
+  function stopScan() {
+    if (!scanning) return;
+    scanning = false;
+    clearTimeout(probeTimer);
+    btnScan.disabled = false;
+    log('── Scan stopped at ' + scanIndex + '/' + CANDIDATES.length + ' ──', 'e-err');
+    setStatus('stopped');
   }
 
-  function prevStyle() {
-    if (state !== 'live') return;
-    styleIndex = (styleIndex - 1 + STYLES.length) % STYLES.length;
-    updateStyleLabel();
+  // ── Button handlers ───────────────────────────────────────────────────────
+  function attachBtn(el, fn) {
+    el.addEventListener('touchstart', function(e) {
+      e.preventDefault();
+      fn();
+    }, { passive: false });
+    el.addEventListener('click', fn);
   }
+
+  attachBtn(btnScan, function() {
+    if (scanning) stopScan();
+    else startScan();
+  });
+
+  attachBtn(btnResults, showResults);
+
+  attachBtn(btnClearLog, function() {
+    logEl.innerHTML = '';
+    log('Log cleared.', 'e-info');
+  });
+
+  attachBtn(btnClearData, function() {
+    hits = {};
+    saveHits();
+    updateLiveCount();
+    logEl.innerHTML = '';
+    log('Stored hits cleared.', 'e-info');
+    log('Ready for a fresh scan.', 'e-info');
+  });
+
+  // Toggle SCAN button label while scanning
+  btnScan.addEventListener('touchstart', function() {
+    setTimeout(function() {
+      btnScan.textContent = scanning ? 'STOP' : 'SCAN';
+    }, 10);
+  }, { passive: true });
+  btnScan.addEventListener('click', function() {
+    setTimeout(function() {
+      btnScan.textContent = scanning ? 'STOP' : 'SCAN';
+    }, 10);
+  });
+
+  // ── Hardware events ───────────────────────────────────────────────────────
+  window.addEventListener('sideClick', function() {
+    if (!scanning) startScan();
+  });
 
   // ── Boot ──────────────────────────────────────────────────────────────────
-  updateStyleLabel();
-  document.addEventListener('DOMContentLoaded', initCamera);
-  if (document.readyState !== 'loading') initCamera();
+  loadHits();
+  updateLiveCount();
+
+  var storedCount = Object.keys(hits).length;
+  if (storedCount > 0) {
+    log('Loaded ' + storedCount + ' stored hit(s) from previous scan.', 'e-saved');
+    log('Tap HITS to view · SCAN to re-scan · RESET to clear.', 'e-info');
+  }
+
+  log('isR1: ' + isR1, 'e-info');
+  log('Candidates: ' + CANDIDATES.length + ' plugin IDs', 'e-info');
+  log('Probe wait: ' + PROBE_WAIT + 'ms per ID', 'e-info');
+  log('Est. scan time: ~' + Math.ceil(CANDIDATES.length * PROBE_WAIT / 60000) + ' min', 'e-info');
 </script>
 </body>
 </html>
